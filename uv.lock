@@ -2920,6 +2920,7 @@ cwsandbox = [
     { name = "cwsandbox" },
 ]
 databricks = [
+    { name = "databricks-ai-bridge" },
     { name = "databricks-mcp" },
     { name = "databricks-sdk" },
     { name = "opentelemetry-distro" },
@@ -2995,7 +2996,8 @@ requires-dist = [
     { name = "click", specifier = ">=8.0,<10" },
     { name = "cursor-sdk", marker = "extra == 'cursor'", specifier = ">=0.1.7" },
     { name = "cwsandbox", marker = "extra == 'cwsandbox'", specifier = ">=0.24,<1" },
-    { name = "databricks-mcp", marker = "extra == 'databricks'", specifier = ">=0.1.0" },
+    { name = "databricks-ai-bridge", marker = "extra == 'databricks'", specifier = ">=0.19" },
+    { name = "databricks-mcp", marker = "extra == 'databricks'", specifier = ">=0.9.0" },
     { name = "databricks-sdk", marker = "extra == 'all'", specifier = ">=0.56.0,<1" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.56.0,<1" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.180,<1" },
