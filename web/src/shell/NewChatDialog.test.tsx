@@ -719,7 +719,8 @@ describe("NewChatLandingScreen", () => {
     // The home page offers an inline chat box rather than the old
     // "click New session in the sidebar" placeholder. If it regressed to
     // the placeholder, the composer input would be absent and this fails.
-    expect(screen.getByText("What should we do?")).toBeTruthy();
+    expect(screen.getByText("What should we build?")).toBeTruthy();
+    expect(screen.getByTestId("tellimer-brand")).toBeTruthy();
     expect(screen.getByTestId("new-chat-landing-input")).toBeTruthy();
   });
 
@@ -1715,6 +1716,26 @@ describe("NewChatLandingScreen", () => {
     expect(body.host_type).toBe("managed");
     expect("host_id" in body).toBe(false);
     expect("git" in body).toBe(false);
+  });
+
+  it("fills the real repository and branch from a Tellimer project preset", async () => {
+    renderLanding({ managed_sandboxes_enabled: true });
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-host-chip").textContent).toContain("New Sandbox"),
+    );
+    fireEvent.click(screen.getByTestId("new-chat-landing-repo-chip"));
+    openSelect("new-chat-landing-repo-preset");
+    fireEvent.click(screen.getByText("Sentinel v4"));
+
+    expect((screen.getByTestId("new-chat-landing-repo-input") as HTMLInputElement).value).toBe(
+      "https://github.com/Tellimer/spectra.git",
+    );
+    expect(
+      (screen.getByTestId("new-chat-landing-repo-branch-input") as HTMLInputElement).value,
+    ).toBe("staging");
+    expect(screen.getByTestId("new-chat-landing-repo-chip").textContent).toContain(
+      "spectra#staging",
+    );
   });
 
   it("shows host-provided git credentials tooltip content in the sandbox repo popover", async () => {

@@ -134,19 +134,18 @@ const proxyConfig = createProxyConfig(OMNIGENT_URL, useAuth);
 // treating reinstalls/updates as the same app.
 const PWA_MANIFEST = {
   id: "/",
-  name: "Omnigent",
-  short_name: "Omnigent",
-  description: "Omnigent — a common layer over coding agents.",
+  name: "Tellimer Agent Platform",
+  short_name: "Agent Platform",
+  description: "Tellimer's internal control layer for cloud coding agents.",
   start_url: "/",
   scope: "/",
   display: "standalone",
   orientation: "any",
-  theme_color: "#0d1218",
-  background_color: "#0d1218",
+  theme_color: "#141312",
+  background_color: "#141312",
   icons: [
-    { src: "/pwa-192.png", sizes: "192x192", type: "image/png" },
-    { src: "/pwa-512.png", sizes: "512x512", type: "image/png" },
-    { src: "/pwa-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    { src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+    { src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "maskable" },
   ],
 };
 

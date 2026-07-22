@@ -29,6 +29,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TellimerBrand } from "@/components/TellimerBrand";
 import { getMe, login as loginRequest } from "@/lib/accountsApi";
 
 const DEFAULT_RETURN_TO = "/";
@@ -129,8 +130,11 @@ export function LoginPage() {
     >
       <div className="w-full max-w-sm space-y-6">
         <div className="space-y-1 text-center">
+          <TellimerBrand className="mb-5 justify-center" />
           <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
-          <p className="text-sm text-muted-foreground">Welcome to Omnigent.</p>
+          <p className="text-sm text-muted-foreground">
+            Welcome to the internal developer platform.
+          </p>
         </div>
 
         <form onSubmit={onSubmit} className="space-y-4">

@@ -72,16 +72,16 @@ export interface PaletteMeta {
 export const PALETTES: readonly PaletteMeta[] = [
   {
     id: "omni",
-    label: "Omnigent",
-    blurb: "The signature pink brand look.",
+    label: "Tellimer",
+    blurb: "Tellimer paper, ink and violet.",
     light: {
-      bg: "#fdf7fb",
-      card: "#ffffff",
-      accent: "#df3c85",
-      border: "#e8ecf0",
-      text: "#11171c",
+      bg: "#f0edeb",
+      card: "#f8f6f4",
+      accent: "#5d43b1",
+      border: "#d8d3cf",
+      text: "#141312",
     },
-    dark: { bg: "#160e24", card: "#28223a", accent: "#df3c85", border: "#2a2440", text: "#f4f5f7" },
+    dark: { bg: "#141312", card: "#1c1b19", accent: "#9e8cdf", border: "#35322f", text: "#f4f1ee" },
   },
   {
     id: "dracula",

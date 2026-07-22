@@ -2003,3 +2003,93 @@
     radial-gradient(ellipse at 80% 20%, rgba(94, 129, 172, 0.08) 0%, transparent 45%),
     linear-gradient(160deg, #434c5e 0%, #2e3440 60%, #2e3440 100%);
 }
+
+/* Tellimer is the fork's default palette. Alternative user-selected palettes
+ * keep their upstream definitions because these overrides apply only when no
+ * data-theme attribute is present. */
+:root:not(.dark):not([data-theme]) {
+  --background: #f0edeb;
+  --foreground: #141312;
+  --card: #f8f6f4;
+  --card-solid: #f8f6f4;
+  --card-foreground: #141312;
+  --tray: #f8f6f4;
+  --popover: #f8f6f4;
+  --popover-foreground: #141312;
+  --primary: #141312;
+  --primary-foreground: #ffffff;
+  --secondary: #e5e0dc;
+  --secondary-foreground: #141312;
+  --muted: #1413120d;
+  --muted-foreground: #6d6761;
+  --code-bg: #1413120d;
+  --accent: #e6e0f7;
+  --accent-foreground: #3f2e7b;
+  --border: #d8d3cf;
+  --border-strong: #9f9790;
+  --button-border: #c8c1bb;
+  --input: #d8d3cf;
+  --ring: #5d43b1;
+  --brand-accent: #5d43b1;
+  --chart-1: #5d43b1;
+  --chart-2: #9e8cdf;
+  --chart-3: #2ea65c;
+  --chart-4: #d4972a;
+  --chart-5: #827b75;
+  --sidebar: #f0edeb;
+  --sidebar-foreground: #141312;
+  --sidebar-primary: #5d43b1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e6e0f7;
+  --sidebar-accent-foreground: #3f2e7b;
+  --sidebar-border: #d8d3cf;
+  --sidebar-ring: #5d43b1;
+}
+
+.dark:not([data-theme]) {
+  --background: #141312;
+  --foreground: #f4f1ee;
+  --card: rgba(28, 27, 25, 0.86);
+  --card-solid: #1c1b19;
+  --card-foreground: #f4f1ee;
+  --tray: rgba(28, 27, 25, 0.86);
+  --popover: rgba(28, 27, 25, 0.96);
+  --popover-foreground: #f4f1ee;
+  --primary: #f4f1ee;
+  --primary-foreground: #141312;
+  --secondary: #292724;
+  --secondary-foreground: #f4f1ee;
+  --muted: #2a2825;
+  --muted-foreground: #aaa39c;
+  --code-bg: #302d29;
+  --accent: #30294a;
+  --accent-foreground: #cfc5fb;
+  --border: #35322f;
+  --border-strong: #5b554f;
+  --button-border: #45413c;
+  --input: #35322f;
+  --ring: #9e8cdf;
+  --brand-accent: #9e8cdf;
+  --chart-1: #9e8cdf;
+  --chart-2: #cfc5fb;
+  --chart-3: #69e1be;
+  --chart-4: #d9bc75;
+  --chart-5: #aaa39c;
+  --sidebar: rgba(20, 19, 18, 0.96);
+  --sidebar-foreground: #f4f1ee;
+  --sidebar-primary: #9e8cdf;
+  --sidebar-primary-foreground: #141312;
+  --sidebar-accent: #30294a;
+  --sidebar-accent-foreground: #f4f1ee;
+  --sidebar-border: #35322f;
+  --sidebar-ring: #9e8cdf;
+  --tooltip-bg: #24211f;
+}
+
+:root:not(.dark):not([data-theme]) .app-shell {
+  background: #f0edeb;
+}
+
+.dark:not([data-theme]) .app-shell {
+  background: #141312;
+}

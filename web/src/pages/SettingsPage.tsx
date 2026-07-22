@@ -809,7 +809,7 @@ function AppearanceSection() {
   const isEmbedded = useIsEmbedded();
 
   return (
-    <Section title="Appearance" description="Choose how Omnigent looks on this device.">
+    <Section title="Appearance" description="Choose how Agent Platform looks on this device.">
       <div className="flex flex-col gap-8">
         {isEmbedded ? (
           <div className="flex flex-col gap-3">
@@ -849,7 +849,7 @@ function AppearanceSection() {
 /** Git behavior settings. */
 function GitSection() {
   return (
-    <Section title="Git" description="Configure how Omnigent works with Git.">
+    <Section title="Git" description="Configure how Agent Platform works with Git.">
       <div className="flex flex-col gap-8">
         <DefaultBaseBranchControl />
       </div>

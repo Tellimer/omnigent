@@ -21,6 +21,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TellimerBrand } from "@/components/TellimerBrand";
 import { register as registerRequest } from "@/lib/accountsApi";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -81,9 +82,10 @@ export function RegisterPage() {
     >
       <div className="w-full max-w-sm space-y-6">
         <div className="space-y-1 text-center">
+          <TellimerBrand className="mb-5 justify-center" />
           <h1 className="text-2xl font-semibold tracking-tight">Create your account</h1>
           <p className="text-sm text-muted-foreground">
-            You were invited to join this Omnigent server.
+            You were invited to join the Tellimer Agent Platform.
           </p>
         </div>
 

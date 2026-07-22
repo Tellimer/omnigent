@@ -62,6 +62,7 @@ import {
 } from "@dnd-kit/core";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/routing";
 import { Button } from "@/components/ui/button";
+import { TellimerBrand } from "@/components/TellimerBrand";
 import {
   Dialog,
   DialogContent,
@@ -474,9 +475,10 @@ export function Sidebar({ open, onClose, dragProgress = null, onOpenSearch }: Si
             <Link
               to="/"
               onClick={onNavClick}
-              className="rounded-sm text-[15px] font-semibold tracking-tight text-foreground transition-colors hover:text-foreground/70"
+              className="rounded-lg text-foreground transition-opacity hover:opacity-75"
+              aria-label="Tellimer Agent Platform home"
             >
-              Omnigent
+              <TellimerBrand compact />
             </Link>
             <div className="flex items-center gap-1">
               {/* Inbox lives at the top next to the collapse toggle. Rendered

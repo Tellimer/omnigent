@@ -139,15 +139,22 @@ import {
   parseMentionToken,
   rankMentionEntries,
 } from "@/lib/composerMentions";
-import { OttoEyes } from "@/components/OttoEyes";
 import { SkillPills } from "@/components/SkillPills";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
+import { TellimerBrand } from "@/components/TellimerBrand";
 import { type CostControlMode } from "@/components/CostRoutingControl";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentRowTooltip } from "@/components/AgentHoverCard";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { buildAgentBundle, type AgentBundleInput } from "@/lib/agentBundle";
 import { createBundledSession, launchRunner } from "@/lib/sessionsApi";
+import {
+  readLastTellimerRepository,
+  repositoryPresetById,
+  repositoryPresetFor,
+  TELLIMER_REPOSITORIES,
+  writeLastTellimerRepository,
+} from "@/lib/tellimerRepositories";
 
 // Hidden from the new-session picker only. `nessie` is superseded by polly.
 // `kimi` / `kimi-code` are the headless SDK harness (kept for sub-agent / `run
@@ -1951,10 +1958,10 @@ export function NewChatLandingScreen() {
   // `workspace` string (`<url>[#<branch>]`); both blank = empty
   // server-created workspace.
   const [sandboxRepoUrl, setSandboxRepoUrl] = useState<string>(
-    () => landingDraft?.sandboxRepoUrl ?? "",
+    () => landingDraft?.sandboxRepoUrl ?? readLastTellimerRepository()?.url ?? "",
   );
   const [sandboxRepoBranch, setSandboxRepoBranch] = useState<string>(
-    () => landingDraft?.sandboxRepoBranch ?? "",
+    () => landingDraft?.sandboxRepoBranch ?? readLastTellimerRepository()?.branch ?? "",
   );
   const [workspace, setWorkspace] = useState<string>(() => landingDraft?.workspace ?? "");
   const [branchName, setBranchName] = useState<string>(() => landingDraft?.branchName ?? "");
@@ -2833,6 +2840,7 @@ export function NewChatLandingScreen() {
   // Sandbox repository chip label: repo name (server's clone-dir rule)
   // plus the pinned branch, e.g. "repo#main"; placeholder when unset.
   const sandboxRepoName = deriveRepoName(sandboxRepoUrl);
+  const selectedRepositoryPreset = repositoryPresetFor(sandboxRepoUrl, sandboxRepoBranch);
   const sandboxRepoLabel = sandboxRepoName
     ? sandboxRepoBranch.trim()
       ? `${sandboxRepoName}#${sandboxRepoBranch.trim()}`
@@ -3149,11 +3157,16 @@ export function NewChatLandingScreen() {
           keeps the composer from feeling cramped against the viewport
           edges; widens to the full px-10 at the md breakpoint and up. */}
       <div className="flex w-full max-w-[840px] flex-col items-center gap-8 px-4 pt-8 pb-16 md:select-none md:px-10">
-        <div className="flex flex-col items-center gap-3.5 sm:flex-row">
-          <OttoEyes className="h-18 w-auto shrink-0" />
-          <h1 className="text-center text-3xl font-medium tracking-[-0.03em] text-foreground sm:text-left">
-            What should we do?
-          </h1>
+        <div className="flex flex-col items-center gap-4 text-center">
+          <TellimerBrand />
+          <div className="space-y-1.5">
+            <h1 className="text-3xl font-medium tracking-[-0.035em] text-foreground">
+              What should we build?
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Choose a project, pick an agent, and let the cloud sandbox keep working.
+            </p>
+          </div>
         </div>
         <div className="relative flex w-full flex-col gap-3">
           <form
@@ -3737,12 +3750,58 @@ export function NewChatLandingScreen() {
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-96 p-3">
                     <div className="flex flex-col gap-2">
+                      <div className="space-y-1.5">
+                        <label
+                          className="text-xs font-medium text-foreground"
+                          htmlFor="landing-repo-preset"
+                        >
+                          Tellimer project
+                        </label>
+                        <Select
+                          value={selectedRepositoryPreset?.id ?? "custom"}
+                          onValueChange={(value) => {
+                            if (value === "custom") {
+                              setSandboxRepoUrl("");
+                              setSandboxRepoBranch("");
+                              return;
+                            }
+                            const repository = repositoryPresetById(value);
+                            if (!repository) return;
+                            setSandboxRepoUrl(repository.url);
+                            setSandboxRepoBranch(repository.branch);
+                            writeLastTellimerRepository(repository.id);
+                          }}
+                        >
+                          <SelectTrigger
+                            id="landing-repo-preset"
+                            className="w-full"
+                            data-testid="new-chat-landing-repo-preset"
+                          >
+                            <SelectValue placeholder="Select a Tellimer project" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {TELLIMER_REPOSITORIES.map((repository) => (
+                              <SelectItem key={repository.id} value={repository.id}>
+                                <span className="flex min-w-0 flex-col py-0.5">
+                                  <span className="font-medium">{repository.label}</span>
+                                  <span className="truncate text-[10px] text-muted-foreground">
+                                    {repository.description}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                            <SelectSeparator />
+                            <SelectItem value="custom">Custom repository</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="my-1 h-px bg-border" />
                       <div className="flex items-center gap-1.5">
                         <label
                           htmlFor="landing-repo-url"
                           className="text-xs font-medium text-foreground"
                         >
-                          Repository (optional)
+                          Repository URL
                         </label>
                         {databricksGitCredentialsTooltipContent && (
                           <Tooltip>
@@ -3766,7 +3825,7 @@ export function NewChatLandingScreen() {
                         type="text"
                         value={sandboxRepoUrl}
                         onChange={(e) => setSandboxRepoUrl(e.target.value)}
-                        placeholder="https://github.com/org/repo"
+                        placeholder="https://github.com/Tellimer/repository"
                         className="rounded-md border border-input bg-background px-3 py-2 text-xs outline-none transition-colors focus-visible:border-ring"
                         data-testid="new-chat-landing-repo-input"
                       />
@@ -3780,8 +3839,8 @@ export function NewChatLandingScreen() {
                         data-testid="new-chat-landing-repo-branch-input"
                       />
                       <p className="text-xs text-muted-foreground">
-                        Cloned into the sandbox as the session's working directory. Leave blank to
-                        start in an empty workspace.
+                        The selected project supplies the real monorepo and source branch. You can
+                        still enter a custom repository when needed.
                       </p>
                     </div>
                   </PopoverContent>
