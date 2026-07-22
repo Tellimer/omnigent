@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Mapping, Sequence
 from typing import ClassVar
 from urllib.error import HTTPError, URLError
@@ -14,6 +15,8 @@ import click
 from omnigent.onboarding.sandboxes.base import RemoteCommandResult, SandboxLauncher
 
 DEFAULT_TOKEN_ENV = "OMNIGENT_REMOTE_SANDBOX_TOKEN"
+_RESUME_TIMEOUT_S = 15 * 60
+_RESUME_POLL_INTERVAL_S = 2
 
 
 class RemoteSandboxLauncher(SandboxLauncher):
@@ -80,6 +83,7 @@ class RemoteSandboxLauncher(SandboxLauncher):
         return runtime_id
 
     def run(self, sandbox_id: str, command: str, *, check: bool = True) -> RemoteCommandResult:
+        self._ensure_running(sandbox_id)
         body = self._request(
             "POST",
             f"/api/v1/sandbox-runtimes/{sandbox_id}/commands",
@@ -111,6 +115,7 @@ class RemoteSandboxLauncher(SandboxLauncher):
         log_path: str = "/tmp/omnigent-host.log",
     ) -> RemoteCommandResult:
         del log_path
+        self._ensure_running(sandbox_id)
         body = self._request(
             "POST",
             f"/api/v1/sandbox-runtimes/{sandbox_id}/commands",
@@ -128,7 +133,29 @@ class RemoteSandboxLauncher(SandboxLauncher):
         self._request("DELETE", f"/api/v1/sandbox-runtimes/{sandbox_id}")
 
     def resume(self, sandbox_id: str) -> None:
-        self._request("POST", f"/api/v1/sandbox-runtimes/{sandbox_id}/resume")
+        self._request(
+            "POST",
+            f"/api/v1/sandbox-runtimes/{sandbox_id}/resume",
+            timeout=30,
+        )
+        deadline = time.monotonic() + _RESUME_TIMEOUT_S
+        while time.monotonic() < deadline:
+            runtime = self._runtime(sandbox_id)
+            if runtime is None:
+                raise click.ClickException(
+                    f"remote sandbox runtime '{sandbox_id}' disappeared while waking"
+                )
+            state = runtime.get("state")
+            if state == "running":
+                return
+            if state in {"deleted", "error"}:
+                raise click.ClickException(
+                    f"remote sandbox runtime '{sandbox_id}' could not wake (state: {state})"
+                )
+            time.sleep(_RESUME_POLL_INTERVAL_S)
+        raise click.ClickException(
+            f"remote sandbox runtime '{sandbox_id}' did not wake within 15 minutes"
+        )
 
     def is_running(self, sandbox_id: str) -> bool | None:
         runtime = self._runtime(sandbox_id)
@@ -137,6 +164,13 @@ class RemoteSandboxLauncher(SandboxLauncher):
     def exists(self, sandbox_id: str) -> bool | None:
         runtime = self._runtime(sandbox_id)
         return runtime is not None and runtime.get("state") != "deleted"
+
+    def _ensure_running(self, sandbox_id: str) -> None:
+        runtime = self._runtime(sandbox_id)
+        if runtime is None:
+            raise click.ClickException(f"remote sandbox runtime '{sandbox_id}' was not found")
+        if runtime.get("state") != "running":
+            self.resume(sandbox_id)
 
     def _runtime(self, sandbox_id: str) -> Mapping[str, object] | None:
         try:
@@ -181,17 +215,13 @@ class RemoteSandboxLauncher(SandboxLauncher):
                 f"remote sandbox controller request failed ({exc.code}): {detail}"
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
-            raise click.ClickException(
-                f"remote sandbox controller is unavailable: {exc}"
-            ) from exc
+            raise click.ClickException(f"remote sandbox controller is unavailable: {exc}") from exc
         if not raw:
             return {}
         try:
             value = json.loads(raw)
         except ValueError as exc:
-            raise click.ClickException(
-                "remote sandbox controller returned invalid JSON"
-            ) from exc
+            raise click.ClickException("remote sandbox controller returned invalid JSON") from exc
         return self._mapping(value, "response")
 
     @staticmethod

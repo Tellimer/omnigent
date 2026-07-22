@@ -65,6 +65,8 @@ def test_run_uses_controller_command_endpoint_and_preserves_output(
         del timeout
         seen["url"] = request.full_url
         seen["payload"] = json.loads(request.data or b"{}")
+        if request.method == "GET":
+            return _Response({"runtime": {"id": "runtime_abc", "state": "running"}})
         return _Response({"result": {"exitCode": 0, "stdout": "hello\n", "stderr": ""}})
 
     monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
@@ -83,23 +85,61 @@ def test_stopped_runtime_is_resumed_through_the_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[tuple[str, str]] = []
+    get_states = iter(["stopped", "stopped", "running"])
 
     def _urlopen(request: Request, *, timeout: int) -> _Response:
         del timeout
         requests.append((request.method, request.full_url))
         if request.method == "GET":
-            return _Response({"runtime": {"id": "runtime_abc", "state": "stopped"}})
-        return _Response({"runtime": {"id": "runtime_abc", "state": "running"}})
+            return _Response({"runtime": {"id": "runtime_abc", "state": next(get_states)}})
+        return _Response({"runtime": {"id": "runtime_abc", "state": "provisioning"}})
 
     monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
     monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.urlopen", _urlopen)
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.time.sleep", lambda _seconds: None)
     launcher = RemoteSandboxLauncher(url="https://platform.example.com")
 
     assert launcher.is_running("runtime_abc") is False
     assert launcher.exists("runtime_abc") is True
     launcher.resume("runtime_abc")
 
-    assert requests[-1] == (
+    assert (
         "POST",
         "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc/resume",
+    ) in requests
+    assert requests[-1] == (
+        "GET",
+        "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc",
     )
+
+
+def test_first_command_polls_a_stopped_runtime_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str]] = []
+    states = iter(["stopped", "provisioning", "running"])
+
+    def _urlopen(request: Request, *, timeout: int) -> _Response:
+        del timeout
+        requests.append((request.method, request.full_url))
+        if request.method == "GET":
+            return _Response({"runtime": {"id": "runtime_abc", "state": next(states)}})
+        if request.full_url.endswith("/resume"):
+            return _Response({"runtime": {"id": "runtime_abc", "state": "provisioning"}})
+        return _Response({"result": {"exitCode": 0, "stdout": "awake\n", "stderr": ""}})
+
+    monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.urlopen", _urlopen)
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.time.sleep", lambda _seconds: None)
+    launcher = RemoteSandboxLauncher(url="https://platform.example.com")
+
+    result = launcher.run("runtime_abc", "printf awake")
+
+    assert result.stdout == "awake\n"
+    assert requests == [
+        ("GET", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc"),
+        ("POST", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc/resume"),
+        ("GET", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc"),
+        ("GET", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc"),
+        ("POST", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc/commands"),
+    ]
