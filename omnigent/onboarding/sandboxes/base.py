@@ -665,6 +665,19 @@ class SandboxLauncher(ABC):
         """
         raise self._capability_error("configure keep-alive")
 
+    def set_activity(self, sandbox_id: str, *, active: bool) -> None:
+        """Tell a lifecycle-aware provider whether the sandbox has active work.
+
+        The default is deliberately a no-op: most providers either infer
+        activity themselves or do not expose a policy hook. Managed remote
+        controllers can override this to protect a long-running turn from an
+        idle timer and restore the normal idle policy when the turn finishes.
+
+        :param sandbox_id: Target sandbox.
+        :param active: ``True`` while a turn or background task is running.
+        """
+        del sandbox_id, active
+
     @abstractmethod
     def run(self, sandbox_id: str, command: str, *, check: bool = True) -> RemoteCommandResult:
         """

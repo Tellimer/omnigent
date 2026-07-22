@@ -2253,6 +2253,42 @@ def host_sandbox_exists(
     return launcher.exists(host.sandbox_id)
 
 
+async def set_managed_host_activity(
+    host_id: str,
+    host_store: HostStore,
+    config: ManagedSandboxConfig | None,
+    *,
+    active: bool,
+) -> None:
+    """Propagate turn activity to a lifecycle-aware managed sandbox.
+
+    This is best-effort by design: publishing a model status edge must never
+    fail because an optional provider policy endpoint is unavailable. The
+    platform-owned remote launcher uses the signal to extend the provider
+    safety timer while work is active and restore the normal idle timer once
+    the session is quiescent.
+    """
+    host = await asyncio.to_thread(host_store.get_host, host_id)
+    if host is None or host.sandbox_id is None:
+        return
+    launcher = _launcher_for_teardown(host, config)
+    if launcher is None:
+        return
+    try:
+        await asyncio.to_thread(
+            launcher.set_activity,
+            host.sandbox_id,
+            active=active,
+        )
+    except Exception:  # noqa: BLE001 -- optional provider boundary must soft-fail
+        _logger.warning(
+            "Could not update activity policy for managed host %s (sandbox %s)",
+            host_id,
+            host.sandbox_id,
+            exc_info=True,
+        )
+
+
 # ── Managed-host wake (resume a dormant host on demand) ─────────────────────
 
 # Per-host resume single-flight: one in-flight resume per host_id on this
