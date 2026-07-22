@@ -130,6 +130,38 @@ def test_resolve_oldest_returns_none_when_empty() -> None:
     assert pending_inputs.resolve_oldest("conv_a") is None
 
 
+def test_claim_oldest_retry_is_bounded_and_keeps_input_pending() -> None:
+    """One automatic retry preserves the bubble until transcript acceptance."""
+    first = pending_inputs.record("conv_a", [_text_block("first")])
+    second = pending_inputs.record("conv_a", [_text_block("second")])
+
+    claim = pending_inputs.claim_oldest_retry("conv_a", "turn_previous")
+    assert claim is not None
+    assert claim.should_forward is True
+    assert claim.input.pending_id == first
+    assert [entry["pending_id"] for entry in pending_inputs.snapshot_for("conv_a")] == [
+        first,
+        second,
+    ]
+    assert pending_inputs.claim_oldest_retry("conv_a", "turn_retry_failed") is None
+
+
+def test_duplicate_terminal_status_does_not_retry_twice() -> None:
+    """A repeated terminal status acknowledges the existing retry."""
+    first = pending_inputs.record("conv_a", [_text_block("first")])
+    second = pending_inputs.record("conv_a", [_text_block("second")])
+
+    first_claim = pending_inputs.claim_oldest_retry("conv_a", "turn_first")
+    duplicate = pending_inputs.claim_oldest_retry("conv_a", "turn_first")
+    assert first_claim is not None and first_claim.should_forward is True
+    assert duplicate is not None and duplicate.should_forward is False
+    assert duplicate.input.pending_id == first
+    assert [entry["pending_id"] for entry in pending_inputs.snapshot_for("conv_a")] == [
+        first,
+        second,
+    ]
+
+
 def test_resolve_oldest_drains_regardless_of_reformatted_text() -> None:
     """
     Regression: a queued message drains even when the transcript

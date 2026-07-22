@@ -20730,12 +20730,11 @@ def create_sessions_router(
             # forwarders mark that boundary ``input_missing`` after a targeted
             # thread/resume recovery also finds no input. Older, already-live
             # sandboxes cannot emit that hint, so a terminal Codex status with
-            # an AP-side pending web-composer message is the compatibility
-            # signal: successful Codex turns synchronously persist their user
-            # item before this status edge. A remaining pending input is thus
-            # the exact prompt Codex failed to accept.
-            # Persist the prompt plus a durable error and consume its pending
-            # bubble so reload/rebind can never make the user's message vanish.
+            # a pending prompt is the compatibility signal. The common case is
+            # a follow-up racing the previous turn's final boundary: retry it
+            # once now that the forwarder has cleared the active turn. If that
+            # retry also ends without a mirrored user item, persist the prompt
+            # plus a durable error so it can never disappear.
             if (
                 status in {"idle", "failed"}
                 and (
@@ -20744,15 +20743,59 @@ def create_sessions_router(
                 )
                 and _is_native_terminal_session(conv)
             ):
+                raw_missing_input_output = body.data.get("output")
+                missing_input_output = (
+                    raw_missing_input_output.strip()
+                    if isinstance(raw_missing_input_output, str)
+                    and raw_missing_input_output.strip()
+                    else None
+                )
+                retry_claim = (
+                    pending_inputs.claim_oldest_retry(session_id, response_id)
+                    if status == "idle"
+                    and missing_input_output is None
+                    and body.data.get("reauth_required") is not True
+                    else None
+                )
+                if retry_claim is not None:
+                    if retry_claim.should_forward:
+                        retry_runner = await _get_runner_client(session_id, runner_router)
+                        if retry_runner is not None:
+                            try:
+                                await _forward_native_terminal_message(
+                                    retry_runner,
+                                    session_id,
+                                    conv,
+                                    SessionEventInput(
+                                        type="message",
+                                        data={
+                                            "role": "user",
+                                            "content": retry_claim.input.content,
+                                        },
+                                    ),
+                                    file_store=file_store,
+                                    artifact_store=artifact_store,
+                                )
+                            except HTTPException:
+                                _logger.warning(
+                                    "Codex pending-input automatic retry failed: session=%s",
+                                    session_id,
+                                    exc_info=True,
+                                )
+                            else:
+                                return {
+                                    "queued": False,
+                                    "retried_pending_id": retry_claim.input.pending_id,
+                                }
+                    else:
+                        # The forwarder retried an already-processed terminal
+                        # status POST. Acknowledge without delivering twice.
+                        return {
+                            "queued": False,
+                            "retried_pending_id": retry_claim.input.pending_id,
+                        }
                 drained_input = pending_inputs.resolve_oldest(session_id)
                 if drained_input is not None:
-                    raw_missing_input_output = body.data.get("output")
-                    missing_input_output = (
-                        raw_missing_input_output.strip()
-                        if isinstance(raw_missing_input_output, str)
-                        and raw_missing_input_output.strip()
-                        else None
-                    )
                     missing_input_error = ErrorData(
                         source="execution",
                         code=(
@@ -20767,8 +20810,8 @@ def create_sessions_router(
                         message=(
                             missing_input_output
                             or (
-                                "Codex completed the turn without accepting this message. "
-                                "Please retry."
+                                "Codex could not accept this message after an automatic retry. "
+                                "Please send it again."
                             )
                         ),
                     )

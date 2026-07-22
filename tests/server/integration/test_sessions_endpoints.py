@@ -3197,26 +3197,40 @@ async def test_post_external_session_status_failed_surfaces_output_and_reauth(
     assert "401 Unauthorized" in error["message"]
 
 
-async def test_post_external_session_status_missing_input_persists_failed_turn(
+async def test_post_external_session_status_missing_input_retries_once_then_persists_failure(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Codex empty turn cannot silently discard a pending web prompt.
+    """A Codex empty turn retries once, then preserves a durable failure.
 
     Regression for the production failure where ``turn/start`` returned
     accepted, Codex immediately completed with zero observed items, and the
-    optimistic user bubble disappeared on rebind. This deliberately omits the
-    newer forwarder ``input_missing`` hint to prove that already-live Codex
-    sandboxes are protected too: AP must promote its pending input into durable
-    history, attach an actionable error, and clear the exact pending bubble id.
+    optimistic user bubble disappeared on rebind. AP first redelivers the
+    pending input after Codex clears the completed turn. If the retry also
+    completes without accepting it, AP promotes the prompt into durable
+    history, attaches an actionable error, and clears the exact pending id.
     """
     from omnigent.runtime import pending_inputs
 
     published: list[tuple[str, dict[str, Any]]] = []
+    forwarded: list[list[dict[str, Any]]] = []
     monkeypatch.setattr(
         "omnigent.server.routes.sessions.session_stream.publish",
         lambda session_id, event: published.append((session_id, event)),
     )
+
+    async def _runner_client(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    async def _forward_retry(
+        _runner: object,
+        _session_id: str,
+        _conv: Any,
+        event: Any,
+        **_kwargs: Any,
+    ) -> None:
+        forwarded.append(event.data["content"])
+
     pending_inputs.reset_for_tests()
     agent = await create_test_agent(client)
     session = await _create_session(
@@ -3224,19 +3238,42 @@ async def test_post_external_session_status_missing_input_persists_failed_turn(
         agent["id"],
         labels={"omnigent.wrapper": "codex-native-ui"},
     )
+    monkeypatch.setattr("omnigent.server.routes.sessions._get_runner_client", _runner_client)
+    monkeypatch.setattr(
+        "omnigent.server.routes.sessions._forward_native_terminal_message",
+        _forward_retry,
+    )
     pending_id = pending_inputs.record(
         session["id"],
         [{"type": "input_text", "text": "Still working?"}],
         created_by="owner@example.com",
     )
     try:
+        retry_resp = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={
+                "type": "external_session_status",
+                "data": {
+                    "status": "idle",
+                    "response_id": "codex_turn_initial",
+                },
+            },
+        )
+        assert retry_resp.status_code == 202, retry_resp.text
+        assert retry_resp.json()["retried_pending_id"] == pending_id
+        assert forwarded == [[{"type": "input_text", "text": "Still working?"}]]
+        assert [entry["pending_id"] for entry in pending_inputs.snapshot_for(session["id"])] == [
+            pending_id
+        ]
+
         resp = await client.post(
             f"/v1/sessions/{session['id']}/events",
             json={
                 "type": "external_session_status",
                 "data": {
                     "status": "idle",
-                    "response_id": "codex_turn_empty",
+                    "response_id": "codex_turn_retry",
+                    "input_missing": True,
                 },
             },
         )
@@ -3266,6 +3303,79 @@ async def test_post_external_session_status_missing_input_persists_failed_turn(
         ]
         assert len(failed) == 1
         assert failed[0]["error"]["code"] == "codex_input_not_accepted"
+    finally:
+        pending_inputs.reset_for_tests()
+
+
+async def test_post_external_session_status_old_turn_does_not_reject_queued_followup(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completion racing a follow-up automatically redelivers it.
+
+    Native messages are buffered one turn at a time. The old turn's terminal
+    status can therefore reach AP after the next composer message is recorded,
+    but before the runner starts its continuation. That status must not consume
+    or fail the newer message.
+    """
+    from omnigent.runtime import pending_inputs
+
+    forwarded: list[list[dict[str, Any]]] = []
+
+    async def _runner_client(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    async def _forward_retry(
+        _runner: object,
+        _session_id: str,
+        _conv: Any,
+        event: Any,
+        **_kwargs: Any,
+    ) -> None:
+        forwarded.append(event.data["content"])
+
+    pending_inputs.reset_for_tests()
+    agent = await create_test_agent(client)
+    session = await _create_session(
+        client,
+        agent["id"],
+        labels={"omnigent.wrapper": "codex-native-ui"},
+    )
+    try:
+        prior_running = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={
+                "type": "external_session_status",
+                "data": {"status": "running", "response_id": "codex_turn_prior"},
+            },
+        )
+        assert prior_running.status_code == 202, prior_running.text
+        monkeypatch.setattr("omnigent.server.routes.sessions._get_runner_client", _runner_client)
+        monkeypatch.setattr(
+            "omnigent.server.routes.sessions._forward_native_terminal_message",
+            _forward_retry,
+        )
+
+        pending_id = pending_inputs.record(
+            session["id"],
+            [{"type": "input_text", "text": "Can you see this message?"}],
+        )
+        terminal = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={
+                "type": "external_session_status",
+                "data": {"status": "idle", "response_id": "codex_turn_prior"},
+            },
+        )
+
+        assert terminal.status_code == 202, terminal.text
+        assert terminal.json()["retried_pending_id"] == pending_id
+        assert forwarded == [[{"type": "input_text", "text": "Can you see this message?"}]]
+        assert [entry["pending_id"] for entry in pending_inputs.snapshot_for(session["id"])] == [
+            pending_id
+        ]
+        items = (await client.get(f"/v1/sessions/{session['id']}/items")).json()["data"]
+        assert not any(item["type"] == "error" for item in items)
     finally:
         pending_inputs.reset_for_tests()
 
