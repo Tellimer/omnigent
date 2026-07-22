@@ -834,6 +834,21 @@ class SandboxLauncher(ABC):
         del sandbox_id
         return None
 
+    def exists(self, sandbox_id: str) -> bool | None:
+        """Return whether the provider still has this sandbox object.
+
+        Optional capability: ``None`` means the provider has no cheap
+        existence lookup. Managed wake routing uses a definitive ``False`` to
+        provision a new generation instead of trying to resume an object that
+        has already been deleted.
+
+        :param sandbox_id: Provider sandbox identifier.
+        :returns: ``True`` when it exists, ``False`` when it is gone, or
+            ``None`` when the provider cannot answer cheaply.
+        """
+        del sandbox_id
+        return None
+
     def exec_foreground(self, sandbox_id: str, command: str) -> int:
         """
         Run a command in the sandbox with stdio inherited from the

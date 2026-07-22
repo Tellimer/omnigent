@@ -797,6 +797,50 @@ class HostStore:
                 )
             )
 
+    def claim_unbound_managed_host_for_termination(self, host_id: str) -> Host | None:
+        """Atomically revoke an unreferenced managed host before termination.
+
+        Locks the host row, verifies no surviving conversation references it,
+        and deletes the row in one transaction. Deleting the row revokes the
+        launch token and makes any racing new session bind fail its host foreign
+        key, so provider termination can safely happen afterwards without a
+        check/terminate race affecting another session.
+
+        :param host_id: Managed host identifier.
+        :returns: A detached snapshot for provider-side termination when the
+            claim succeeded, or ``None`` when the host is absent, external, or
+            still referenced.
+        """
+        try:
+            with self._session() as session:
+                row = session.execute(
+                    select(SqlHost)
+                    .where(
+                        SqlHost.workspace_id == current_workspace_id(),
+                        SqlHost.host_id == host_id,
+                    )
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if row is None or row.sandbox_id is None:
+                    return None
+                surviving_reference = session.execute(
+                    select(SqlConversationMetadata.id)
+                    .where(
+                        SqlConversationMetadata.workspace_id == current_workspace_id(),
+                        SqlConversationMetadata.host_id == host_id,
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if surviving_reference is not None:
+                    return None
+                claimed = _row_to_host(row)
+                session.delete(row)
+                return claimed
+        except IntegrityError:
+            # A session bound between the reference read and host-row delete.
+            # The FK fails the delete closed; leave the host/sandbox intact.
+            return None
+
     def revoke_launch_token(self, host_id: str) -> None:
         """
         Clear a managed host's launch credential, keeping the row.

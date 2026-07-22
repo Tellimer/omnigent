@@ -6948,6 +6948,7 @@ async def _provision_managed_sandbox(
                 config=sandbox_config,
                 host=relaunch_host,
                 host_store=host_store,
+                session_id=session_id,
                 repo=repo,
                 on_stage=_on_stage,
             )
@@ -6955,6 +6956,7 @@ async def _provision_managed_sandbox(
             config=sandbox_config,
             owner=owner,
             host_store=host_store,
+            session_id=session_id,
             repo=repo,
             on_stage=_on_stage,
         )
@@ -7207,7 +7209,10 @@ async def _maybe_relaunch_managed_sandbox(
         # uses (host_resume_supported). Both run in the background through this
         # same tracker, so the message parks on the rendezvous either way; only
         # the provision step differs.
-        if host_resume_supported(host, sandbox_config):
+        from omnigent.server.managed_hosts import host_sandbox_exists
+
+        sandbox_exists = await asyncio.to_thread(host_sandbox_exists, host, sandbox_config)
+        if host_resume_supported(host, sandbox_config) and sandbox_exists is not False:
             _kick_managed_wake(
                 session_id=session_id,
                 conv=conv,
@@ -21693,22 +21698,37 @@ def create_sessions_router(
         # Managed-host cleanup: when the session's host is backed by a
         # server-provisioned sandbox (host_type="managed"), terminate
         # the sandbox and delete the host row — which also revokes its
-        # launch token. Best-effort by design — the provider's lifetime
-        # cap reaps stragglers. External (laptop) hosts have no
+        # launch token. The conversation row (and its subtree) is already
+        # gone, so first prove no independently surviving conversation still
+        # references this host. That reference guard prevents deleting one
+        # session from terminating another session's sandbox after a legacy,
+        # fork, or manual shared-host binding. External (laptop) hosts have no
         # sandbox_id and are never touched.
         host_store_for_managed = getattr(request.app.state, "host_store", None)
         if conv.host_id is not None and host_store_for_managed is not None:
-            bound_host = await asyncio.to_thread(host_store_for_managed.get_host, conv.host_id)
-            if bound_host is not None and bound_host.sandbox_id is not None:
+            claimed_host = await asyncio.to_thread(
+                host_store_for_managed.claim_unbound_managed_host_for_termination,
+                conv.host_id,
+            )
+            if claimed_host is not None:
                 from omnigent.server.managed_hosts import terminate_managed_host
 
                 await terminate_managed_host(
-                    bound_host,
+                    claimed_host,
                     host_store_for_managed,
                     # Supplies the launcher for the provider-side
                     # terminate; None (config removed since launch)
                     # still deletes the row and revokes the token.
                     getattr(request.app.state, "sandbox_config", None),
+                )
+            elif (
+                await asyncio.to_thread(host_store_for_managed.get_host, conv.host_id) is not None
+            ):
+                _logger.info(
+                    "Keeping managed host %s after deleting session %s: "
+                    "another session still references it",
+                    conv.host_id,
+                    session_id,
                 )
         try:
             import hashlib as _hashlib

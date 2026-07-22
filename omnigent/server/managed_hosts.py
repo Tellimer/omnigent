@@ -1846,6 +1846,7 @@ async def launch_managed_host(
     config: ManagedSandboxConfig,
     owner: str,
     host_store: HostStore,
+    session_id: str | None = None,
     repo: RepoWorkspace | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> ManagedHostLaunch:
@@ -1869,6 +1870,8 @@ async def launch_managed_host(
     :param host_store: Persistent host registrations — receives the
         pre-registered host row and is polled for the sandbox host
         coming online.
+    :param session_id: Canonical session id for provider-side ownership
+        metadata, or ``None`` for direct/test launches.
     :param repo: Parsed repository-URL workspace to clone into the
         sandbox as the session's working directory, or ``None`` for
         an empty workspace. Private repositories authenticate via the
@@ -1891,6 +1894,9 @@ async def launch_managed_host(
     owner_setter = getattr(launcher, "set_platform_owner", None)
     if callable(owner_setter):
         owner_setter(owner)
+    session_setter = getattr(launcher, "set_platform_session", None)
+    if session_id is not None and callable(session_setter):
+        session_setter(session_id)
     host_id = uuid.uuid4().hex
     # Visible label in the host picker; (owner, name) is the hosts
     # table PK, so embed the host_id's leading hex for uniqueness
@@ -1923,6 +1929,7 @@ async def relaunch_managed_host(
     config: ManagedSandboxConfig,
     host: Host,
     host_store: HostStore,
+    session_id: str | None = None,
     repo: RepoWorkspace | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> ManagedHostLaunch:
@@ -1949,6 +1956,8 @@ async def relaunch_managed_host(
     :param host: The existing managed host row to relaunch
         (``sandbox_provider`` set; callers guard on that).
     :param host_store: Persistent host registrations.
+    :param session_id: Canonical session id for provider-side ownership
+        metadata, or ``None`` for direct/test relaunches.
     :param repo: Repository to re-clone as the workspace, or ``None``
         for an empty workspace.
     :param on_stage: Progress observer forwarded to
@@ -1971,6 +1980,9 @@ async def relaunch_managed_host(
     owner_setter = getattr(launcher, "set_platform_owner", None)
     if callable(owner_setter):
         owner_setter(host.user_id)
+    session_setter = getattr(launcher, "set_platform_session", None)
+    if session_id is not None and callable(session_setter):
+        session_setter(session_id)
     # The old generation is normally already dead (that is why we are
     # here), but terminate defensively so a transient tunnel outage
     # can never leave two live sandboxes claiming one host identity.
@@ -2198,6 +2210,17 @@ def host_sandbox_is_running(
     if launcher is None or host.sandbox_id is None:
         return None
     return launcher.is_running(host.sandbox_id)
+
+
+def host_sandbox_exists(
+    host: Host,
+    config: ManagedSandboxConfig | None,
+) -> bool | None:
+    """Ask the matched provider whether the recorded sandbox still exists."""
+    launcher = _launcher_for_teardown(host, config)
+    if launcher is None or host.sandbox_id is None:
+        return None
+    return launcher.exists(host.sandbox_id)
 
 
 # ── Managed-host wake (resume a dormant host on demand) ─────────────────────

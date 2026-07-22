@@ -20,11 +20,11 @@ before ``stream_exec`` would ever run.
 
 Platform notes that shape this launcher:
 
-- **No hard lifetime cap, but idle auto-stop.** Daytona stops sandboxes
-  after 15 idle minutes BY DEFAULT — fatal for a session host that may
-  sit between turns — so :meth:`DaytonaSandboxLauncher.provision`
-  disables auto-stop. Sandboxes then live until the session is deleted
-  (or the dead-sandbox relaunch path replaces a crashed one).
+- **No hard lifetime cap, with resumable idle auto-stop.** Daytona stops
+  sandboxes after 15 idle minutes BY DEFAULT. Managed sessions instead use
+  a one-hour idle window: stopped sandboxes retain their filesystem, and the
+  next Omnigent message starts the same sandbox and host again. This releases
+  idle compute without turning an old session into a dead end.
 - **Workload env rides sandbox creation.** Daytona has no named-secret
   store to attach at create time; harness credentials are injected as
   literal ``env_vars``, resolved BY NAME from the server process
@@ -96,10 +96,13 @@ _SANDBOX_MEMORY_GIB: int = 4
 # and take seconds. The SDK default (60 s) only covers the warm path.
 _CREATE_TIMEOUT_S: float = 900.0
 
-# Daytona's idle auto-stop default is 15 minutes; 0 disables it. An
-# Omnigent host must survive arbitrary idle gaps between turns, so
-# auto-stop is always disabled (sandbox lifecycle is owned by the
-# managed-session machinery: session delete / relaunch terminate it).
+# Daytona's idle auto-stop is expressed in minutes. A one-hour window releases
+# compute promptly while preserving the sandbox filesystem. ``resume`` starts
+# the SAME sandbox on the next message.
+_MANAGED_AUTO_STOP_MINUTES: int = 60
+
+# CLI-attached sandboxes still use keep_alive()'s historical contract: the
+# foreground host lives until the operator disconnects or deletes it.
 _AUTO_STOP_DISABLED: int = 0
 
 # Terminate retries when Daytona reports a state-change conflict (e.g.
@@ -190,6 +193,9 @@ class DaytonaSandboxLauncher(SandboxLauncher):
     # Daytona preview links are sandbox→public only; there is no
     # local→sandbox path for the App OAuth callback port.
     supports_local_port_forward: ClassVar[bool] = False
+    # Daytona stop/start preserves the sandbox filesystem. The managed-session
+    # wake path can therefore revive a cold session in place.
+    can_resume: ClassVar[bool] = True
 
     def __init__(self, *, image: str | None = None, env: Sequence[str] | None = None) -> None:
         """
@@ -213,6 +219,7 @@ class DaytonaSandboxLauncher(SandboxLauncher):
         self._client: daytona_sdk.Daytona | None = None
         self._sandboxes: dict[str, DaytonaSandbox] = {}
         self._platform_owner: str | None = None
+        self._platform_session_id: str | None = None
 
     def _daytona(self) -> daytona_sdk.Daytona:
         """
@@ -300,6 +307,10 @@ class DaytonaSandboxLauncher(SandboxLauncher):
         """Bind this per-launch instance to the authenticated session owner."""
         self._platform_owner = owner
 
+    def set_platform_session(self, session_id: str) -> None:
+        """Bind provider metadata to the Omnigent session being launched."""
+        self._platform_session_id = session_id
+
     def _resolve_owner_profile(self) -> dict[str, object]:
         """Resolve non-secret Daytona mount references for this owner."""
         base_url = os.environ.get("PLATFORM_MODEL_CREDENTIAL_BROKER_URL")
@@ -361,10 +372,10 @@ class DaytonaSandboxLauncher(SandboxLauncher):
         """
         Create a new Daytona sandbox from the host image.
 
-        Idle auto-stop is disabled (Daytona's 15-minute default would
-        kill a host sitting between turns); the sandbox lives until the
-        managed-session machinery terminates it. The first creation
-        from a given image is slow (Daytona pulls it and builds an
+        Idle auto-stop is set to one hour. A stopped sandbox retains its
+        filesystem and is resumed in place by the managed-session wake path,
+        while truly abandoned sessions stop consuming compute. The first
+        creation from a given image is slow (Daytona pulls it and builds an
         internal snapshot); later creations reuse the snapshot.
 
         :param name: Human-readable label, e.g. ``"managed-a1b2c3d4"``.
@@ -405,17 +416,21 @@ class DaytonaSandboxLauncher(SandboxLauncher):
             isinstance(key, str) and isinstance(value, str) for key, value in raw_secrets.items()
         ):
             raise click.ClickException("model connection profile secrets are invalid")
+        labels = {"omnigent-name": name}
+        if self._platform_session_id is not None:
+            # Provider-dashboard audit trail: the canonical session id makes
+            # the one-session/one-sandbox ownership visible outside Omnigent.
+            labels["omnigent-session-id"] = self._platform_session_id
         click.echo(f"▸ Creating Daytona sandbox '{name}' from {resolved_ref}")
         try:
             handle = self._daytona().create(
                 daytona.CreateSandboxFromImageParams(
                     image=resolved_ref,
                     env_vars=env_vars or None,
-                    labels={"omnigent-name": name},
-                    # Disable idle auto-stop (Daytona's 15-minute default
-                    # would kill the host between turns); the managed-
-                    # session machinery owns sandbox termination.
-                    auto_stop_interval=_AUTO_STOP_DISABLED,
+                    labels=labels,
+                    # Release compute after one hour of inactivity. The
+                    # persistent sandbox is resumed in place on next message.
+                    auto_stop_interval=_MANAGED_AUTO_STOP_MINUTES,
                     resources=daytona.Resources(cpu=_SANDBOX_CPU, memory=_SANDBOX_MEMORY_GIB),
                     volumes=volumes,
                     secrets=raw_secrets or None,
@@ -495,10 +510,10 @@ class DaytonaSandboxLauncher(SandboxLauncher):
         Disable Daytona's idle auto-stop so the host survives idle
         gaps between turns.
 
-        ``provision`` already creates sandboxes with auto-stop
-        disabled; this re-asserts it for attached sandboxes created
-        outside this flow. Soft-fail per the launcher contract: a
-        rejected setting warns rather than aborting the bootstrap.
+        Managed ``provision`` uses a one-hour idle window. This separate
+        CLI-bootstrap primitive disables auto-stop for an explicitly attached
+        foreground host. Soft-fail per the launcher contract: a rejected
+        setting warns rather than aborting the bootstrap.
 
         :param sandbox_id: The sandbox to configure.
         """
@@ -519,6 +534,61 @@ class DaytonaSandboxLauncher(SandboxLauncher):
             )
         else:
             click.echo("  → idle auto-stop disabled (sandbox lives until deleted)")
+
+    def resume(self, sandbox_id: str) -> None:
+        """Start a stopped Daytona sandbox in place, preserving its filesystem."""
+        handle = self._resolve(sandbox_id)
+        import daytona
+
+        try:
+            handle.refresh_data()
+            if handle.state != daytona.SandboxState.STARTED:
+                handle.start()
+            # Old Omnigent generations were created with auto-stop disabled.
+            # Re-assert the managed one-hour policy on every wake so they
+            # converge without destructive migration.
+            handle.set_autostop_interval(_MANAGED_AUTO_STOP_MINUTES)
+        except daytona.DaytonaError as exc:
+            raise click.ClickException(
+                f"Could not resume Daytona sandbox '{sandbox_id}': {exc}"
+            ) from exc
+
+    def is_running(self, sandbox_id: str) -> bool | None:
+        """Return Daytona's refreshed started/stopped state for wake routing."""
+        try:
+            handle = self._resolve(sandbox_id)
+        except click.ClickException:
+            # The managed relaunch path will attempt a fresh generation when
+            # the old provider object is gone. Report not-running rather than
+            # letting a status probe abort message dispatch.
+            return False
+        import daytona
+
+        try:
+            handle.refresh_data()
+        except daytona.DaytonaError:
+            # A transient provider read must not be mistaken for a definitive
+            # stopped/deleted state. Omnigent falls back to tunnel liveness.
+            return None
+        if handle.state == daytona.SandboxState.STARTED:
+            return True
+        if handle.state == daytona.SandboxState.STOPPED:
+            return False
+        return None
+
+    def exists(self, sandbox_id: str) -> bool | None:
+        """Return whether Daytona still retains the named sandbox."""
+        _ensure_sdk()
+        import daytona
+
+        try:
+            self._daytona().get(sandbox_id)
+        except daytona.DaytonaNotFoundError:
+            self._sandboxes.pop(sandbox_id, None)
+            return False
+        except daytona.DaytonaError:
+            return None
+        return True
 
     def run(self, sandbox_id: str, command: str, *, check: bool = True) -> RemoteCommandResult:
         """

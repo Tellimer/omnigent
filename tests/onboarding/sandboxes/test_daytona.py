@@ -434,23 +434,20 @@ def test_prepare_passes_with_api_key(fake_daytona: _FakeDaytonaState) -> None:
 # ── provision ───────────────────────────────────────────────
 
 
-def test_provision_defaults_official_image_and_disables_autostop(
+def test_provision_defaults_official_image_and_uses_1h_autostop(
     fake_daytona: _FakeDaytonaState,
 ) -> None:
     """
-    A bare provision uses the official host image, DISABLES idle
-    auto-stop (Daytona's 15-minute default would kill a host sitting
-    between turns), injects no env, and sizes the sandbox like the
-    Modal launcher.
+    A bare provision uses the official host image, extends Daytona's
+    15-minute default to a one-hour idle window, injects no env, and
+    sizes the sandbox like the Modal launcher.
     """
     sandbox_id = DaytonaSandboxLauncher().provision("managed-abc")
 
     assert sandbox_id == "dt-new-1"
     [create] = fake_daytona.create_calls
     assert create.params.image == DEFAULT_HOST_IMAGE
-    # 0 = disabled; any other value re-enables the idle reaper that
-    # would stop the session host mid-conversation.
-    assert create.params.auto_stop_interval == 0
+    assert create.params.auto_stop_interval == 60
     assert create.params.env_vars == {
         "CODEX_HOME": "/root/.codex",
         "CLAUDE_CONFIG_DIR": "/root/.claude",
@@ -462,6 +459,22 @@ def test_provision_defaults_official_image_and_disables_autostop(
     # default only covers the warm path.
     assert create.timeout > 60
     assert create.has_log_callback is True
+
+
+def test_provision_labels_sandbox_with_canonical_session_id(
+    fake_daytona: _FakeDaytonaState,
+) -> None:
+    """Provider dashboard metadata identifies the owning Omnigent session."""
+    launcher = DaytonaSandboxLauncher()
+    launcher.set_platform_session("conv_owner_123")
+
+    launcher.provision("managed-owner")
+
+    [create] = fake_daytona.create_calls
+    assert create.params.labels == {
+        "omnigent-name": "managed-owner",
+        "omnigent-session-id": "conv_owner_123",
+    }
 
 
 def test_provision_image_resolution_order(
@@ -783,6 +796,35 @@ def test_attach_unknown_sandbox_fails_with_hint(fake_daytona: _FakeDaytonaState)
     """A vanished sandbox surfaces as a clear error naming the id."""
     with pytest.raises(click.ClickException, match="dt-gone"):
         DaytonaSandboxLauncher().attach("dt-gone")
+
+
+def test_resume_starts_same_stopped_sandbox_and_restores_1h_policy(
+    fake_daytona: _FakeDaytonaState,
+) -> None:
+    """Managed wake preserves the sandbox id/filesystem and restarts compute."""
+    launcher = DaytonaSandboxLauncher()
+    sandbox_id = launcher.provision("a")
+    sandbox = fake_daytona.sandboxes[sandbox_id]
+    sandbox.state = _FakeSandboxState.STOPPED
+
+    launcher.resume(sandbox_id)
+
+    assert sandbox.start_calls == 1
+    assert sandbox.state == _FakeSandboxState.STARTED
+    assert sandbox.autostop_intervals == [60]
+
+
+def test_is_running_refreshes_provider_state(fake_daytona: _FakeDaytonaState) -> None:
+    """Status probes distinguish live, stopped, and deleted Daytona sandboxes."""
+    launcher = DaytonaSandboxLauncher()
+    sandbox_id = launcher.provision("a")
+    sandbox = fake_daytona.sandboxes[sandbox_id]
+
+    assert launcher.is_running(sandbox_id) is True
+    sandbox.state = _FakeSandboxState.STOPPED
+    assert launcher.is_running(sandbox_id) is False
+    fake_daytona.sandboxes.pop(sandbox_id)
+    assert launcher.exists(sandbox_id) is False
 
 
 def test_keep_alive_disables_autostop(fake_daytona: _FakeDaytonaState) -> None:
