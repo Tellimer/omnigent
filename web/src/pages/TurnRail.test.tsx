@@ -27,9 +27,23 @@ function makeTurns(n: number): Turn[] {
   }));
 }
 
-function renderRail(turns: Turn[]) {
+function makeScroller({ clientHeight = 100, scrollHeight = 200 } = {}) {
+  const el = document.createElement("div");
+  Object.defineProperties(el, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+  });
+  return { el };
+}
+
+function renderRail(turns: Turn[], scroller = makeScroller()) {
   return render(
-    <TurnRail turns={turns} scroller={null} hasMoreHistory={false} loadingMoreHistory={false} />,
+    <TurnRail
+      turns={turns}
+      scroller={scroller}
+      hasMoreHistory={false}
+      loadingMoreHistory={false}
+    />,
   );
 }
 
@@ -41,6 +55,14 @@ afterEach(() => {
 describe("TurnRail", () => {
   it("renders nothing for a single-turn (or empty) conversation", () => {
     const { container } = renderRail(makeTurns(1));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders nothing when the whole conversation already fits onscreen", () => {
+    const { container } = renderRail(
+      makeTurns(2),
+      makeScroller({ clientHeight: 200, scrollHeight: 200 }),
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -135,7 +157,7 @@ describe("TurnRail", () => {
     const { container } = render(
       <TurnRail
         turns={makeTurns(3)}
-        scroller={null}
+        scroller={makeScroller()}
         hasMoreHistory={false}
         loadingMoreHistory={false}
       />,
@@ -150,7 +172,7 @@ describe("TurnRail", () => {
     const { container } = render(
       <TurnRail
         turns={makeTurns(3)}
-        scroller={null}
+        scroller={makeScroller()}
         hasMoreHistory={true}
         loadingMoreHistory={true}
       />,

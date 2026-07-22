@@ -78,8 +78,33 @@ export function TurnRail({
   // window before older history lands. Latches true and stays true — later
   // scroll-up loads must not re-hide it.
   const [revealed, setRevealed] = useState(false);
+  // The rail is navigation chrome, so it only belongs on a transcript that
+  // actually scrolls. On a short chat its ticks read as stray dashes beneath
+  // the final answer and offer nowhere useful to navigate.
+  const [transcriptScrollable, setTranscriptScrollable] = useState(false);
 
   const scrollEl = scroller?.el ?? null;
+
+  useEffect(() => {
+    if (!scrollEl) {
+      setTranscriptScrollable(false);
+      return;
+    }
+
+    const update = () => {
+      const next = scrollEl.scrollHeight > scrollEl.clientHeight + 1;
+      setTranscriptScrollable((previous) => (previous === next ? previous : next));
+    };
+
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(update);
+    observer.observe(scrollEl);
+    const content = scrollEl.firstElementChild;
+    if (content instanceof HTMLElement) observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollEl, turns.length]);
 
   // Track which turns' messages are on screen, so their ticks read as active.
   // A turn spans from its own user-message anchor down to the next turn's
@@ -331,8 +356,9 @@ export function TurnRail({
 
   const hovered = hoveredId ? turns.find((t) => t.itemId === hoveredId) : undefined;
 
-  // A single-turn (or empty) conversation has nothing to navigate.
-  if (turns.length < 2) return null;
+  // A single-turn conversation has nothing to navigate. A short multi-turn
+  // conversation already visible in full does not need a minimap either.
+  if (turns.length < 2 || !transcriptScrollable) return null;
 
   return (
     <div
