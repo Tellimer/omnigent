@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.error import URLError
 from urllib.request import Request
 
+import click
 import pytest
 
 from omnigent.onboarding.sandboxes.remote import RemoteSandboxLauncher
@@ -21,8 +23,8 @@ class _Response:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amount: int = -1) -> bytes:
+        return self._body if amount < 0 else self._body[:amount]
 
 
 def test_provision_sends_launch_context_and_returns_stable_runtime_id(
@@ -175,3 +177,68 @@ def test_first_command_polls_a_stopped_runtime_before_execution(
         ("GET", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc"),
         ("POST", "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc/commands"),
     ]
+
+
+def test_activity_signal_uses_versioned_controller_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict[str, object]]] = []
+
+    def _urlopen(request: Request, *, timeout: int) -> _Response:
+        assert timeout == 30
+        requests.append((request.method, request.full_url, json.loads(request.data or b"{}")))
+        return _Response({"runtime": {"id": "runtime_abc", "active": True}})
+
+    monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.urlopen", _urlopen)
+    launcher = RemoteSandboxLauncher(url="https://platform.example.com")
+
+    launcher.set_activity("runtime_abc", active=True)
+
+    assert requests == [
+        (
+            "POST",
+            "https://platform.example.com/api/v1/sandbox-runtimes/runtime_abc/activity",
+            {"active": True},
+        )
+    ]
+
+
+def test_retryable_status_lookup_recovers_from_transient_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def _urlopen(request: Request, *, timeout: int) -> _Response:
+        del request, timeout
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise URLError("temporary outage")
+        return _Response({"runtime": {"id": "runtime_abc", "state": "running"}})
+
+    monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.urlopen", _urlopen)
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.time.sleep", lambda _seconds: None)
+    launcher = RemoteSandboxLauncher(url="https://platform.example.com")
+
+    assert launcher.is_running("runtime_abc") is True
+    assert attempts == 2
+
+
+def test_response_body_is_bounded_before_json_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _OversizedResponse(_Response):
+        def __init__(self) -> None:
+            self._body = b"x" * (1024 * 1024 + 1)
+
+    monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
+    monkeypatch.setattr(
+        "omnigent.onboarding.sandboxes.remote.urlopen",
+        lambda _request, *, timeout: _OversizedResponse(),
+    )
+    launcher = RemoteSandboxLauncher(url="https://platform.example.com")
+
+    with pytest.raises(click.ClickException, match="response exceeded 1048576 bytes"):
+        launcher.is_running("runtime_abc")

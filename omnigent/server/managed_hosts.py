@@ -1886,6 +1886,7 @@ async def launch_managed_host(
     config: ManagedSandboxConfig,
     owner: str,
     host_store: HostStore,
+    session_id: str | None = None,
     repo: RepoWorkspace | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> ManagedHostLaunch:
@@ -1909,6 +1910,8 @@ async def launch_managed_host(
     :param host_store: Persistent host registrations — receives the
         pre-registered host row and is polled for the sandbox host
         coming online.
+    :param session_id: Canonical session id for provider-side ownership
+        metadata, when the launch is associated with a session.
     :param repo: Parsed repository-URL workspace to clone into the
         sandbox as the session's working directory, or ``None`` for
         an empty workspace. Private repositories authenticate via the
@@ -1961,6 +1964,7 @@ async def relaunch_managed_host(
     config: ManagedSandboxConfig,
     host: Host,
     host_store: HostStore,
+    session_id: str | None = None,
     repo: RepoWorkspace | None = None,
     on_stage: Callable[[str], None] | None = None,
 ) -> ManagedHostLaunch:
@@ -1987,6 +1991,8 @@ async def relaunch_managed_host(
     :param host: The existing managed host row to relaunch
         (``sandbox_provider`` set; callers guard on that).
     :param host_store: Persistent host registrations.
+    :param session_id: Canonical session id for provider-side ownership
+        metadata, when the relaunch is associated with a session.
     :param repo: Repository to re-clone as the workspace, or ``None``
         for an empty workspace.
     :param on_stage: Progress observer forwarded to
@@ -2234,6 +2240,53 @@ def host_sandbox_is_running(
     if launcher is None or host.sandbox_id is None:
         return None
     return launcher.is_running(host.sandbox_id)
+
+
+def host_sandbox_exists(
+    host: Host,
+    config: ManagedSandboxConfig | None,
+) -> bool | None:
+    """Ask the matched provider whether the recorded sandbox still exists."""
+    launcher = _launcher_for_teardown(host, config)
+    if launcher is None or host.sandbox_id is None:
+        return None
+    return launcher.exists(host.sandbox_id)
+
+
+async def set_managed_host_activity(
+    host_id: str,
+    host_store: HostStore,
+    config: ManagedSandboxConfig | None,
+    *,
+    active: bool,
+) -> None:
+    """Propagate turn activity to a lifecycle-aware managed sandbox.
+
+    This is best-effort by design: publishing a model status edge must never
+    fail because an optional provider policy endpoint is unavailable. The
+    platform-owned remote launcher uses the signal to extend the provider
+    safety timer while work is active and restore the normal idle timer once
+    the session is quiescent.
+    """
+    host = await asyncio.to_thread(host_store.get_host, host_id)
+    if host is None or host.sandbox_id is None:
+        return
+    launcher = _launcher_for_teardown(host, config)
+    if launcher is None:
+        return
+    try:
+        await asyncio.to_thread(
+            launcher.set_activity,
+            host.sandbox_id,
+            active=active,
+        )
+    except Exception:  # noqa: BLE001 -- optional provider boundary must soft-fail
+        _logger.warning(
+            "Could not update activity policy for managed host %s (sandbox %s)",
+            host_id,
+            host.sandbox_id,
+            exc_info=True,
+        )
 
 
 # ── Managed-host wake (resume a dormant host on demand) ─────────────────────

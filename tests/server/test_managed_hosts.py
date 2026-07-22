@@ -33,6 +33,7 @@ from omnigent.server.managed_hosts import (
     parse_sandbox_config,
     relaunch_managed_host,
     resume_managed_host,
+    set_managed_host_activity,
     terminate_managed_host,
 )
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -1826,6 +1827,38 @@ class _IsloFakeLauncher(FakeSandboxLauncher):
     """Fake launcher carrying Islo's provider label for managed resume tests."""
 
     provider: ClassVar[str] = "islo"
+
+
+class _ActivityFakeLauncher(_IsloFakeLauncher):
+    """Capture lifecycle activity signals from the managed-host seam."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.activity: list[tuple[str, bool]] = []
+
+    def set_activity(self, sandbox_id: str, *, active: bool) -> None:
+        self.activity.append((sandbox_id, active))
+
+
+async def test_managed_host_activity_targets_its_bound_sandbox(db_uri: str) -> None:
+    """A status edge updates only the sandbox recorded on that host row."""
+    host_store = HostStore(db_uri)
+    host_id = "618f50482ee943a99eae16fcf1cc9158"
+    host_store.register_managed_host(
+        host_id=host_id,
+        name="managed-activity",
+        user_id=_OWNER,
+        token="tok-activity",
+        provider="islo",
+        sandbox_id="sb-activity",
+        token_expires_at=now_epoch() + 3600,
+    )
+    fake = _ActivityFakeLauncher()
+
+    await set_managed_host_activity(host_id, host_store, _injected_config(fake), active=True)
+    await set_managed_host_activity(host_id, host_store, _injected_config(fake), active=False)
+
+    assert fake.activity == [("sb-activity", True), ("sb-activity", False)]
 
 
 async def test_host_resume_supported_requires_resumable_matching_launcher(db_uri: str) -> None:

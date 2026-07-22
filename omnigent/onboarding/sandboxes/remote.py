@@ -17,6 +17,10 @@ from omnigent.onboarding.sandboxes.base import RemoteCommandResult, SandboxLaunc
 DEFAULT_TOKEN_ENV = "OMNIGENT_REMOTE_SANDBOX_TOKEN"
 _RESUME_TIMEOUT_S = 15 * 60
 _RESUME_POLL_INTERVAL_S = 2
+_MAX_RESPONSE_BYTES = 1024 * 1024
+_MAX_ERROR_BYTES = 4096
+_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+_RETRY_DELAYS_S = (0.25, 1.0)
 
 
 class RemoteSandboxLauncher(SandboxLauncher):
@@ -75,6 +79,7 @@ class RemoteSandboxLauncher(SandboxLauncher):
                 "env": env,
             },
             timeout=15 * 60,
+            retryable=True,
         )
         runtime = self._mapping(body.get("runtime"), "runtime")
         runtime_id = runtime.get("id")
@@ -108,13 +113,23 @@ class RemoteSandboxLauncher(SandboxLauncher):
         return completed
 
     def terminate(self, sandbox_id: str) -> None:
-        self._request("DELETE", f"/api/v1/sandbox-runtimes/{sandbox_id}")
+        self._request("DELETE", f"/api/v1/sandbox-runtimes/{sandbox_id}", retryable=True)
+
+    def set_activity(self, sandbox_id: str, *, active: bool) -> None:
+        self._request(
+            "POST",
+            f"/api/v1/sandbox-runtimes/{sandbox_id}/activity",
+            {"active": active},
+            timeout=30,
+            retryable=True,
+        )
 
     def resume(self, sandbox_id: str) -> None:
         self._request(
             "POST",
             f"/api/v1/sandbox-runtimes/{sandbox_id}/resume",
             timeout=30,
+            retryable=True,
         )
         deadline = time.monotonic() + _RESUME_TIMEOUT_S
         while time.monotonic() < deadline:
@@ -152,7 +167,7 @@ class RemoteSandboxLauncher(SandboxLauncher):
 
     def _runtime(self, sandbox_id: str) -> Mapping[str, object] | None:
         try:
-            body = self._request("GET", f"/api/v1/sandbox-runtimes/{sandbox_id}")
+            body = self._request("GET", f"/api/v1/sandbox-runtimes/{sandbox_id}", retryable=True)
         except click.ClickException as exc:
             if "(404)" in exc.message:
                 return None
@@ -166,6 +181,7 @@ class RemoteSandboxLauncher(SandboxLauncher):
         body: Mapping[str, object] | None = None,
         *,
         timeout: int = 90,
+        retryable: bool = False,
     ) -> Mapping[str, object]:
         token = os.environ.get(self._token_env)
         if not token:
@@ -184,16 +200,30 @@ class RemoteSandboxLauncher(SandboxLauncher):
                 "X-Sandbox-Runtime-API-Version": "1",
             },
         )
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                raw = response.read()
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise click.ClickException(
-                f"remote sandbox controller request failed ({exc.code}): {detail}"
-            ) from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            raise click.ClickException(f"remote sandbox controller is unavailable: {exc}") from exc
+        attempts = len(_RETRY_DELAYS_S) + 1 if retryable else 1
+        raw = b""
+        for attempt in range(attempts):
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    raw = self._read_bounded(response, _MAX_RESPONSE_BYTES)
+                break
+            except HTTPError as exc:
+                if exc.code in _RETRYABLE_STATUS_CODES and attempt + 1 < attempts:
+                    time.sleep(_RETRY_DELAYS_S[attempt])
+                    continue
+                detail = self._read_bounded(exc, _MAX_ERROR_BYTES).decode(
+                    "utf-8", errors="replace"
+                )
+                raise click.ClickException(
+                    f"remote sandbox controller request failed ({exc.code}): {detail}"
+                ) from exc
+            except (URLError, TimeoutError, OSError) as exc:
+                if attempt + 1 < attempts:
+                    time.sleep(_RETRY_DELAYS_S[attempt])
+                    continue
+                raise click.ClickException(
+                    f"remote sandbox controller is unavailable: {exc}"
+                ) from exc
         if not raw:
             return {}
         try:
@@ -201,6 +231,18 @@ class RemoteSandboxLauncher(SandboxLauncher):
         except ValueError as exc:
             raise click.ClickException("remote sandbox controller returned invalid JSON") from exc
         return self._mapping(value, "response")
+
+    @staticmethod
+    def _read_bounded(response: object, limit: int) -> bytes:
+        read = getattr(response, "read", None)
+        if not callable(read):
+            raise click.ClickException("remote sandbox controller returned an invalid response")
+        raw = read(limit + 1)
+        if len(raw) > limit:
+            raise click.ClickException(
+                f"remote sandbox controller response exceeded {limit} bytes"
+            )
+        return raw
 
     @staticmethod
     def _mapping(value: object, name: str) -> Mapping[str, object]:
