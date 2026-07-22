@@ -3205,9 +3205,10 @@ async def test_post_external_session_status_missing_input_persists_failed_turn(
 
     Regression for the production failure where ``turn/start`` returned
     accepted, Codex immediately completed with zero observed items, and the
-    optimistic user bubble disappeared on rebind. The forwarder's
-    ``input_missing`` edge must promote AP's pending input into durable history,
-    attach an actionable error, and clear the exact pending bubble id.
+    optimistic user bubble disappeared on rebind. This deliberately omits the
+    newer forwarder ``input_missing`` hint to prove that already-live Codex
+    sandboxes are protected too: AP must promote its pending input into durable
+    history, attach an actionable error, and clear the exact pending bubble id.
     """
     from omnigent.runtime import pending_inputs
 
@@ -3236,7 +3237,6 @@ async def test_post_external_session_status_missing_input_persists_failed_turn(
                 "data": {
                     "status": "idle",
                     "response_id": "codex_turn_empty",
-                    "input_missing": True,
                 },
             },
         )

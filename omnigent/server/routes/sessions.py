@@ -7854,6 +7854,20 @@ def _is_native_terminal_session(conv: Conversation) -> bool:
     return _native_coding_agent_for_session(conv) is not None
 
 
+def _is_codex_native_terminal_session(conv: Conversation) -> bool:
+    """Return whether a session is driven by the Codex native harness.
+
+    This intentionally resolves both built-in wrapper sessions and custom
+    chat-first agents.  It is also safe for status edges emitted by older
+    Codex forwarders, which do not carry the newer ``input_missing`` hint.
+
+    :param conv: Conversation row for the target session.
+    :returns: ``True`` when the resolved native harness is ``codex-native``.
+    """
+    native_agent = _native_coding_agent_for_session(conv)
+    return native_agent is not None and native_agent.harness == "codex-native"
+
+
 def _native_terminal_runtime(conv: Conversation) -> tuple[str, str, str]:
     """
     Return native terminal runtime strings for a native-harness session.
@@ -20706,16 +20720,22 @@ def create_sessions_router(
                     code=ErrorCode.INVALID_INPUT,
                 )
             # Codex can occasionally accept ``turn/start`` and immediately
-            # complete it without recording even the userMessage. The native
-            # forwarder marks that boundary ``input_missing`` after a targeted
-            # thread/resume recovery also finds no input. When AP still has a
-            # pending web-composer message, this is not a harmless terminal
-            # empty turn: it is the exact prompt Codex failed to accept.
+            # complete it without recording even the userMessage. New native
+            # forwarders mark that boundary ``input_missing`` after a targeted
+            # thread/resume recovery also finds no input. Older, already-live
+            # sandboxes cannot emit that hint, so a terminal Codex status with
+            # an AP-side pending web-composer message is the compatibility
+            # signal: successful Codex turns synchronously persist their user
+            # item before this status edge. A remaining pending input is thus
+            # the exact prompt Codex failed to accept.
             # Persist the prompt plus a durable error and consume its pending
             # bubble so reload/rebind can never make the user's message vanish.
             if (
                 status in {"idle", "failed"}
-                and body.data.get("input_missing") is True
+                and (
+                    body.data.get("input_missing") is True
+                    or _is_codex_native_terminal_session(conv)
+                )
                 and _is_native_terminal_session(conv)
             ):
                 drained_input = pending_inputs.resolve_oldest(session_id)
