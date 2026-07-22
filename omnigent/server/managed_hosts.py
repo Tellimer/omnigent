@@ -1888,6 +1888,9 @@ async def launch_managed_host(
         startup, or registration fails.
     """
     launcher = config.launcher_factory()
+    owner_setter = getattr(launcher, "set_platform_owner", None)
+    if callable(owner_setter):
+        owner_setter(owner)
     host_id = uuid.uuid4().hex
     # Visible label in the host picker; (owner, name) is the hosts
     # table PK, so embed the host_id's leading hex for uniqueness
@@ -1965,6 +1968,9 @@ async def relaunch_managed_host(
                 "was launched with is no longer configured on this server"
             ),
         )
+    owner_setter = getattr(launcher, "set_platform_owner", None)
+    if callable(owner_setter):
+        owner_setter(host.user_id)
     # The old generation is normally already dead (that is why we are
     # here), but terminate defensively so a transient tunnel outage
     # can never leave two live sandboxes claiming one host identity.

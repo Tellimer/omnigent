@@ -591,6 +591,15 @@ class SandboxLauncher(ABC):
         :raises click.ClickException: If materialization fails (e.g. the clone
             fails).
         """
+        # GitHub accepts both repository URLs with and without `.git`, but its
+        # credential request can expose the suffix-less form with a trailing
+        # slash. Canonicalize the URL so strict repository-scoped credential
+        # helpers always receive the stable `owner/repository.git` path.
+        clone_url = repo_url
+        if clone_url.startswith("https://github.com/"):
+            clone_url = clone_url.rstrip("/")
+            if not clone_url.endswith(".git"):
+                clone_url = f"{clone_url}.git"
         if on_stage is not None:
             on_stage("cloning")
         clone_dir = f"{workspace}/{repo_name}"
@@ -602,7 +611,7 @@ class SandboxLauncher(ABC):
         try:
             self.run(
                 sandbox_id,
-                f"git clone {branch_args}-- {shlex.quote(repo_url)} {shlex.quote(clone_dir)}",
+                f"git clone {branch_args}-- {shlex.quote(clone_url)} {shlex.quote(clone_dir)}",
             )
         except click.ClickException as exc:
             # Provider boundary: re-raise with the repository named so the

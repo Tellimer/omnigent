@@ -444,6 +444,19 @@ def _ensure_builtin_agent(
         # Sha-segment compare: legacy rows keep an ``ag_``-prefixed left
         # segment (physical artifact key); only the sha encodes content.
         if existing.bundle_location.rsplit("/", 1)[-1] == bundle_hash:
+            # The database and artifact directory can become temporarily
+            # out of sync when durable storage is attached after the first
+            # deployment. A matching hash proves the packaged bytes are the
+            # correct replacement, so restore the missing object in place.
+            try:
+                artifact_store.get(existing.bundle_location)
+            except KeyError:
+                artifact_store.put(existing.bundle_location, bundle_bytes)
+                _logger.warning(
+                    "Restored missing built-in %s agent bundle at %s",
+                    name,
+                    existing.bundle_location,
+                )
             # Row current; evict so a lagging replica's stale cache reloads the bundle.
             agent_cache.evict(existing.id)
             return

@@ -1,0 +1,60 @@
+name: Tellimer upstream sync
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: tellimer-upstream-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: github.repository == 'Tellimer/omnigent'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Tellimer main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Merge upstream into the sync branch
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "tellimer-agent-platform[bot]"
+          git config user.email "tellimer-agent-platform[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/omnigent-ai/omnigent.git
+          git fetch --prune upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git switch -C automation/upstream-sync origin/main
+          git merge --no-edit upstream/main
+          git push --force-with-lease origin automation/upstream-sync
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the upstream sync pull request
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh pr list --base main --head automation/upstream-sync --state open --json number --jq 'length' | grep -qx 0; then
+            gh pr create \
+              --base main \
+              --head automation/upstream-sync \
+              --title "Sync Omnigent upstream" \
+              --body "Automated merge of the latest omnigent-ai/omnigent main into the Tellimer fork. Resolve any conflicts in this branch, run the fork checks, then merge normally."
+          fi

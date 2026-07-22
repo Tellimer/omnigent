@@ -134,7 +134,7 @@ def test_start_host_default_materialize_clones_repo() -> None:
     assert workspace == "/root/workspace/repo"
     assert (
         "git clone --branch release-1.2 --single-branch -- "
-        "https://github.com/org/repo /root/workspace/repo"
+        "https://github.com/org/repo.git /root/workspace/repo"
     ) in launcher.commands
 
 
