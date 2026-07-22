@@ -122,6 +122,19 @@ class DrainedInput:
 
 
 @dataclass
+class RetryClaim:
+    """A pending input claimed for one automatic delivery retry.
+
+    :param input: Copy of the pending input to forward again.
+    :param should_forward: ``False`` when the same terminal status already
+        triggered the retry and this is only a duplicate status delivery.
+    """
+
+    input: DrainedInput
+    should_forward: bool
+
+
+@dataclass
 class MatchedDrain:
     """Result from draining pending inputs up to a text-matched entry."""
 
@@ -149,11 +162,17 @@ class _Entry:
         carries the correct author on all clients.
     :param created_at: ``time.monotonic()`` timestamp at record time,
         used only for TTL eviction.
+    :param delivery_attempts: Number of runner forwards attempted for this
+        input, including the original delivery.
+    :param retry_response_id: Terminal turn id that triggered the automatic
+        retry, used to make duplicate status delivery idempotent.
     """
 
     pending_id: str
     content: list[dict[str, Any]]
     created_by: str | None = None
+    delivery_attempts: int = 1
+    retry_response_id: str | None = None
     # Lambda (not ``_now`` directly) so a monkeypatched ``_now`` is
     # resolved at construction time rather than bound at class def.
     created_at: float = field(default_factory=lambda: _now())
@@ -241,6 +260,39 @@ def resolve(conversation_id: str, pending_id: str) -> None:
         entries.pop(pending_id, None)
         if not entries:
             _pending.pop(conversation_id, None)
+
+
+def claim_oldest_retry(
+    conversation_id: str,
+    response_id: str | None,
+) -> RetryClaim | None:
+    """Claim the oldest pending input for one automatic retry.
+
+    The original forward can race the previous native turn's completion and
+    be accepted by the runner without reaching Codex. A terminal status while
+    the prompt is still pending proves the transcript did not accept it, so AP
+    may safely forward it once more after the forwarder clears the active turn.
+    The entry remains pending until Codex mirrors the accepted user message.
+
+    :param conversation_id: Conversation/session id, e.g. ``"conv_abc123"``.
+    :param response_id: Terminal native turn id. Used as an idempotency key
+        when the forwarder retries delivery of the same status POST.
+    :returns: A retry claim, or ``None`` when no input is pending or its one
+        automatic retry was already consumed by a different terminal turn.
+    """
+    with _lock:
+        _evict_stale_locked(conversation_id, _now())
+        entries = _pending.get(conversation_id)
+        if entries is None:
+            return None
+        entry = next(iter(entries.values()))
+        if response_id is not None and entry.retry_response_id == response_id:
+            return RetryClaim(input=_drained_input(entry), should_forward=False)
+        if entry.delivery_attempts >= 2:
+            return None
+        entry.delivery_attempts += 1
+        entry.retry_response_id = response_id
+        return RetryClaim(input=_drained_input(entry), should_forward=True)
 
 
 def resolve_oldest(conversation_id: str) -> DrainedInput | None:
