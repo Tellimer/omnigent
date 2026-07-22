@@ -38,14 +38,11 @@ Platform notes that shape this launcher:
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 import click
 
@@ -218,8 +215,6 @@ class DaytonaSandboxLauncher(SandboxLauncher):
         self._env_names = tuple(env) if env is not None else None
         self._client: daytona_sdk.Daytona | None = None
         self._sandboxes: dict[str, DaytonaSandbox] = {}
-        self._platform_owner: str | None = None
-        self._platform_session_id: str | None = None
 
     def _daytona(self) -> daytona_sdk.Daytona:
         """
@@ -303,56 +298,6 @@ class DaytonaSandboxLauncher(SandboxLauncher):
             resolved[name] = value
         return resolved
 
-    def set_platform_owner(self, owner: str) -> None:
-        """Bind this per-launch instance to the authenticated session owner."""
-        self._platform_owner = owner
-
-    def set_platform_session(self, session_id: str) -> None:
-        """Bind provider metadata to the Omnigent session being launched."""
-        self._platform_session_id = session_id
-
-    def _resolve_owner_profile(self) -> dict[str, object]:
-        """Resolve non-secret Daytona mount references for this owner."""
-        base_url = os.environ.get("PLATFORM_MODEL_CREDENTIAL_BROKER_URL")
-        token = os.environ.get("PLATFORM_MODEL_CREDENTIAL_BROKER_TOKEN")
-        if not base_url and not token:
-            return {}
-        if not base_url or not token or not self._platform_owner:
-            raise click.ClickException(
-                "owner-scoped model credential broker is incompletely configured"
-            )
-        separator = "&" if "?" in base_url else "?"
-        url = f"{base_url}{separator}{urlencode({'owner': self._platform_owner})}"
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        try:
-            with urlopen(request, timeout=10) as response:
-                profile = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:
-            raise click.ClickException(
-                "could not resolve the execution owner's model connection profile"
-            ) from exc
-        if not isinstance(profile, dict):
-            raise click.ClickException("model connection broker returned an invalid profile")
-        return profile
-
-    @staticmethod
-    def _append_runner_passthrough(env_vars: dict[str, str]) -> None:
-        names = [
-            item.strip()
-            for item in env_vars.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
-            if item.strip()
-        ]
-        for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
-            if name not in names:
-                names.append(name)
-        env_vars["OMNIGENT_RUNNER_ENV_PASSTHROUGH"] = ",".join(names)
-
     def prepare(self) -> None:
         """
         Local preflight: the Daytona SDK must be installed and an API
@@ -388,52 +333,17 @@ class DaytonaSandboxLauncher(SandboxLauncher):
 
         resolved_ref = self._image_ref or os.environ.get(HOST_IMAGE_ENV_VAR) or DEFAULT_HOST_IMAGE
         env_vars = self._resolve_sandbox_env()
-        profile = self._resolve_owner_profile()
-        env_vars.setdefault("CODEX_HOME", "/root/.codex")
-        env_vars.setdefault("CLAUDE_CONFIG_DIR", "/root/.claude")
-        self._append_runner_passthrough(env_vars)
-        volumes = None
-        raw_volume = profile.get("volume")
-        if raw_volume is not None:
-            if not isinstance(raw_volume, dict):
-                raise click.ClickException("model connection profile volume is invalid")
-            volume_id = raw_volume.get("id")
-            subpath = raw_volume.get("subpath")
-            mount_path = raw_volume.get("mountPath", "/root/.tellimer-auth")
-            if not all(
-                isinstance(value, str) and value for value in (volume_id, subpath, mount_path)
-            ):
-                raise click.ClickException("model connection profile volume is incomplete")
-            volumes = [
-                daytona.VolumeMount(
-                    volume_id=volume_id,
-                    mount_path=mount_path,
-                    subpath=subpath,
-                )
-            ]
-        raw_secrets = profile.get("secrets", {})
-        if not isinstance(raw_secrets, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in raw_secrets.items()
-        ):
-            raise click.ClickException("model connection profile secrets are invalid")
-        labels = {"omnigent-name": name}
-        if self._platform_session_id is not None:
-            # Provider-dashboard audit trail: the canonical session id makes
-            # the one-session/one-sandbox ownership visible outside Omnigent.
-            labels["omnigent-session-id"] = self._platform_session_id
         click.echo(f"▸ Creating Daytona sandbox '{name}' from {resolved_ref}")
         try:
             handle = self._daytona().create(
                 daytona.CreateSandboxFromImageParams(
                     image=resolved_ref,
                     env_vars=env_vars or None,
-                    labels=labels,
+                    labels={"omnigent-name": name},
                     # Release compute after one hour of inactivity. The
                     # persistent sandbox is resumed in place on next message.
                     auto_stop_interval=_MANAGED_AUTO_STOP_MINUTES,
                     resources=daytona.Resources(cpu=_SANDBOX_CPU, memory=_SANDBOX_MEMORY_GIB),
-                    volumes=volumes,
-                    secrets=raw_secrets or None,
                 ),
                 timeout=_CREATE_TIMEOUT_S,
                 # First-use image pulls stream build logs; echo them so a
@@ -448,28 +358,6 @@ class DaytonaSandboxLauncher(SandboxLauncher):
             # instead of a generic "internal error".
             raise click.ClickException(f"Daytona sandbox creation failed: {exc}") from exc
         self._sandboxes[handle.id] = handle
-        if raw_volume is not None:
-            self.run(
-                handle.id,
-                "set -eu; mkdir -p /root/.codex; chmod 700 /root/.codex; "
-                "if [ -s /root/.tellimer-auth/codex/auth.json ]; then "
-                "cp -f /root/.tellimer-auth/codex/auth.json /root/.codex/auth.json; "
-                "chmod 600 /root/.codex/auth.json; fi; "
-                "if [ -f /root/.tellimer-auth/codex/config.toml ]; then "
-                "cp -f /root/.tellimer-auth/codex/config.toml /root/.codex/config.toml; fi; "
-                "rm -f /root/.tellimer-auth/codex/state_*.sqlite*",
-            )
-            self.run_background(
-                handle.id,
-                "while sleep 15; do "
-                "if [ -s /root/.codex/auth.json ]; then "
-                "mkdir -p /root/.tellimer-auth/codex; "
-                "tmp=/root/.tellimer-auth/codex/.auth.json.$$.tmp; "
-                "cp -f /root/.codex/auth.json $tmp && chmod 600 $tmp "
-                "&& mv -f $tmp /root/.tellimer-auth/codex/auth.json; "
-                "fi; done",
-                log_path="/tmp/codex-auth-sync.log",
-            )
         click.echo(f"  → created {handle.id}")
         return handle.id
 
