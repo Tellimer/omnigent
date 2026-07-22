@@ -81,6 +81,38 @@ def test_run_uses_controller_command_endpoint_and_preserves_output(
     assert result.stdout == "hello\n"
 
 
+def test_background_run_uses_the_shared_durable_shell_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    def _urlopen(request: Request, *, timeout: int) -> _Response:
+        del timeout
+        if request.method == "GET":
+            return _Response({"runtime": {"id": "runtime_abc", "state": "running"}})
+        payloads.append(json.loads(request.data or b"{}"))
+        return _Response({"result": {"exitCode": 0, "stdout": "launched\n", "stderr": ""}})
+
+    monkeypatch.setenv("OMNIGENT_REMOTE_SANDBOX_TOKEN", "runtime-secret")
+    monkeypatch.setattr("omnigent.onboarding.sandboxes.remote.urlopen", _urlopen)
+    launcher = RemoteSandboxLauncher(url="https://platform.example.com")
+
+    result = launcher.run_background(
+        "runtime_abc",
+        "FOO=bar omnigent host --server https://omnigent.example.com",
+    )
+
+    assert result.stdout == "launched\n"
+    assert payloads == [
+        {
+            "command": "setsid nohup sh -c "
+            "'FOO=bar omnigent host --server https://omnigent.example.com' "
+            "> /tmp/omnigent-host.log 2>&1 < /dev/null & echo launched",
+            "timeoutSeconds": 15 * 60,
+        }
+    ]
+
+
 def test_stopped_runtime_is_resumed_through_the_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
