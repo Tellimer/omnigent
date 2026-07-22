@@ -1161,6 +1161,95 @@ async def test_post_turn_status_edge_clean_idle_has_no_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_turn_status_edge_marks_missing_input() -> None:
+    """A terminal turn with no recovered user item reports that fact to AP.
+
+    AP owns the pending web-composer index, so the forwarder must preserve
+    this correlation signal instead of treating the boundary as an ordinary
+    idle edge. AP can then commit the stranded prompt as a failed turn.
+    """
+    client = _RecordingClient()
+    edge = fwd._CodexTurnStatusEdge(
+        status="idle",
+        turn_id="turn_123",
+        source="turn/completed",
+        input_missing=True,
+    )
+
+    await fwd._post_turn_status_edge(client, "conv_x", edge)
+
+    assert len(client.posts) == 1
+    _url, body = client.posts[0]
+    assert body["data"]["status"] == "idle"
+    assert body["data"]["input_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_boundary_marks_input_missing_after_resume_recovery_misses(
+    tmp_path: Path,
+) -> None:
+    """An itemless Codex turn reports missing input after resume confirms it.
+
+    This exercises the production path rather than constructing the status
+    edge directly: no live ``userMessage`` was seen, the targeted
+    ``thread/resume`` contains no user item, and the resulting terminal status
+    carries ``input_missing`` for AP's pending-input reconciliation.
+    """
+
+    class _EmptyResumeClient:
+        async def request(self, method: str, params: dict) -> dict:
+            assert method == "thread/resume"
+            assert params == {"threadId": "thread_123"}
+            return {
+                "result": {
+                    "thread": {
+                        "id": "thread_123",
+                        "turns": [
+                            {
+                                "id": "turn_123",
+                                "status": "completed",
+                                "items": [],
+                            }
+                        ],
+                    }
+                }
+            }
+
+    _seed_active_turn(tmp_path, "turn_123")
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState(codex_client=_EmptyResumeClient())
+    usage_coalescer = MagicMock()
+    usage_coalescer.flush = AsyncMock()
+
+    await fwd._handle_terminal_turn_boundary(
+        client,
+        session_id="conv_x",
+        bridge_dir=tmp_path,
+        method="turn/completed",
+        params={
+            "threadId": "thread_123",
+            "turn": {
+                "id": "turn_123",
+                "status": "completed",
+                "items": [],
+            },
+        },
+        usage_coalescer=usage_coalescer,
+        delta_coalescer=None,
+        elicitation_tracker=fwd._CodexElicitationTaskTracker(),
+        codex_client=None,
+        forwarder_state=state,
+    )
+
+    status_posts = [
+        body for _url, body in client.posts if body["type"] == "external_session_status"
+    ]
+    assert len(status_posts) == 1
+    assert status_posts[0]["data"]["status"] == "idle"
+    assert status_posts[0]["data"]["input_missing"] is True
+
+
+@pytest.mark.asyncio
 async def test_compaction_status_posts_and_dedupes_consecutive() -> None:
     """
     Compaction status mirrors as external_compaction_status, deduped (#1255).

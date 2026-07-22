@@ -3197,6 +3197,79 @@ async def test_post_external_session_status_failed_surfaces_output_and_reauth(
     assert "401 Unauthorized" in error["message"]
 
 
+async def test_post_external_session_status_missing_input_persists_failed_turn(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Codex empty turn cannot silently discard a pending web prompt.
+
+    Regression for the production failure where ``turn/start`` returned
+    accepted, Codex immediately completed with zero observed items, and the
+    optimistic user bubble disappeared on rebind. The forwarder's
+    ``input_missing`` edge must promote AP's pending input into durable history,
+    attach an actionable error, and clear the exact pending bubble id.
+    """
+    from omnigent.runtime import pending_inputs
+
+    published: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "omnigent.server.routes.sessions.session_stream.publish",
+        lambda session_id, event: published.append((session_id, event)),
+    )
+    pending_inputs.reset_for_tests()
+    agent = await create_test_agent(client)
+    session = await _create_session(
+        client,
+        agent["id"],
+        labels={"omnigent.wrapper": "codex-native-ui"},
+    )
+    pending_id = pending_inputs.record(
+        session["id"],
+        [{"type": "input_text", "text": "Still working?"}],
+        created_by="owner@example.com",
+    )
+    try:
+        resp = await client.post(
+            f"/v1/sessions/{session['id']}/events",
+            json={
+                "type": "external_session_status",
+                "data": {
+                    "status": "idle",
+                    "response_id": "codex_turn_empty",
+                    "input_missing": True,
+                },
+            },
+        )
+
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["item_id"]
+        assert pending_inputs.snapshot_for(session["id"]) == []
+
+        items = (await client.get(f"/v1/sessions/{session['id']}/items")).json()["data"]
+        user_items = [item for item in items if item["type"] == "message"]
+        assert len(user_items) == 1
+        assert user_items[0]["content"] == [{"type": "input_text", "text": "Still working?"}]
+        assert user_items[0]["created_by"] == "owner@example.com"
+        errors = [item for item in items if item["type"] == "error"]
+        assert len(errors) == 1
+        assert errors[0]["code"] == "codex_input_not_accepted"
+
+        consumed = [
+            event for _sid, event in published if event["type"] == "session.input.consumed"
+        ]
+        assert len(consumed) == 1
+        assert consumed[0]["data"]["cleared_pending_id"] == pending_id
+        failed = [
+            event
+            for _sid, event in published
+            if event["type"] == "session.status" and event["status"] == "failed"
+        ]
+        assert len(failed) == 1
+        assert failed[0]["error"]["code"] == "codex_input_not_accepted"
+    finally:
+        pending_inputs.reset_for_tests()
+
+
 async def test_post_external_session_status_carries_response_id(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

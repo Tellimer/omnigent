@@ -8116,6 +8116,7 @@ async def _persist_native_terminal_failure(
     runner_router: RunnerRouter | None,
     *,
     created_by: str | None,
+    cleared_pending_id: str | None = None,
 ) -> str:
     """
     Persist a consumed user message and terminal-start error.
@@ -8146,6 +8147,8 @@ async def _persist_native_terminal_failure(
         in-process / test setups where the global client is used.
     :param created_by: Authenticated posting actor, e.g.
         ``"alice@example.com"``; ``None`` in single-user mode.
+    :param cleared_pending_id: Pending-input id consumed by this failed turn,
+        when the failure was detected after native dispatch.
     :returns: Store-assigned id of the consumed user message item.
     """
     turn_id = generate_task_id()
@@ -8170,7 +8173,11 @@ async def _persist_native_terminal_failure(
         ),
     )
     consumed = persisted_items[0]
-    _publish_input_consumed(session_id, consumed)
+    _publish_input_consumed(
+        session_id,
+        consumed,
+        cleared_pending_id=cleared_pending_id,
+    )
     if error_persist_result == "persisted":
         _publish_error_event(session_id, error)
     _publish_terminal_pending(session_id, False)
@@ -20698,6 +20705,69 @@ def create_sessions_router(
                     "external_session_status data.response_id must be a string",
                     code=ErrorCode.INVALID_INPUT,
                 )
+            # Codex can occasionally accept ``turn/start`` and immediately
+            # complete it without recording even the userMessage. The native
+            # forwarder marks that boundary ``input_missing`` after a targeted
+            # thread/resume recovery also finds no input. When AP still has a
+            # pending web-composer message, this is not a harmless terminal
+            # empty turn: it is the exact prompt Codex failed to accept.
+            # Persist the prompt plus a durable error and consume its pending
+            # bubble so reload/rebind can never make the user's message vanish.
+            if (
+                status in {"idle", "failed"}
+                and body.data.get("input_missing") is True
+                and _is_native_terminal_session(conv)
+            ):
+                drained_input = pending_inputs.resolve_oldest(session_id)
+                if drained_input is not None:
+                    raw_missing_input_output = body.data.get("output")
+                    missing_input_output = (
+                        raw_missing_input_output.strip()
+                        if isinstance(raw_missing_input_output, str)
+                        and raw_missing_input_output.strip()
+                        else None
+                    )
+                    missing_input_error = ErrorData(
+                        source="execution",
+                        code=(
+                            "codex_reauth_required"
+                            if body.data.get("reauth_required") is True
+                            else (
+                                "codex_turn_error"
+                                if missing_input_output is not None
+                                else "codex_input_not_accepted"
+                            )
+                        ),
+                        message=(
+                            missing_input_output
+                            or (
+                                "Codex completed the turn without accepting this message. "
+                                "Please retry."
+                            )
+                        ),
+                    )
+                    await _persist_session_status_error_labels(
+                        session_id,
+                        ErrorDetail(
+                            code=missing_input_error.code,
+                            message=missing_input_error.message,
+                        ),
+                        conversation_store,
+                    )
+                    consumed_item_id = await _persist_native_terminal_failure(
+                        session_id,
+                        conv,
+                        SessionEventInput(
+                            type="message",
+                            data={"role": "user", "content": drained_input.content},
+                        ),
+                        conversation_store,
+                        missing_input_error,
+                        runner_router,
+                        created_by=drained_input.created_by,
+                        cleared_pending_id=drained_input.pending_id,
+                    )
+                    return {"queued": False, "item_id": consumed_item_id}
             # Surface the failure reason a native forwarder carries so a
             # top-level session sees it on its own status edge and persisted
             # last_task_error, not only the sub-agent parent-inbox path.

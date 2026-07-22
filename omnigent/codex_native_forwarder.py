@@ -947,12 +947,17 @@ class _CodexTurnStatusEdge:
     :param error: Turn-level error forcing this edge to ``failed``,
         or ``None`` for ordinary lifecycle edges. Surfaced as the status
         output by :func:`_post_turn_status_edge`.
+    :param input_missing: ``True`` when the turn reached a terminal boundary
+        without the forwarder observing (or recovering) its user message.
+        The AP server combines this signal with its native pending-input index
+        so a web-composer prompt cannot disappear as a silent empty turn.
     """
 
     status: str
     turn_id: str | None
     source: str
     error: _CodexTerminalError | None = None
+    input_missing: bool = False
 
 
 # Codex ``item/completed`` item types that represent a built-in tool call.
@@ -3043,7 +3048,35 @@ async def _handle_terminal_turn_boundary(
         params=params,
         forwarder_state=forwarder_state,
     )
-    handled = await _handle_terminal_turn_event(client, session_id, bridge_dir, method, params)
+    # A fresh subscription can miss the first userMessage event. Assistant
+    # completion already performs this recovery, but a Codex turn that ends
+    # with no assistant item never reaches that path. Try the same targeted
+    # resume at the terminal boundary, then tell AP when the input is still
+    # absent. AP is the only layer that knows whether a web-composer prompt is
+    # pending, so it can distinguish a harmless native empty turn from a lost
+    # web message and persist the latter as an explicit failed turn.
+    terminal_turn_id = _terminal_turn_id_from_params(params)
+    input_missing = False
+    if (
+        forwarder_state is not None
+        and forwarder_state.codex_client is not None
+        and terminal_turn_id is not None
+    ):
+        await _ensure_user_message_posted(
+            client,
+            session_id,
+            _params_with_turn_id(params, terminal_turn_id),
+            forwarder_state,
+        )
+        input_missing = not forwarder_state.has_posted_user_message(terminal_turn_id)
+    handled = await _handle_terminal_turn_event(
+        client,
+        session_id,
+        bridge_dir,
+        method,
+        params,
+        input_missing=input_missing,
+    )
     if handled:
         await elicitation_tracker.resolve_by_terminal_turn_event(
             client,
@@ -3917,6 +3950,8 @@ async def _handle_terminal_turn_event(
     bridge_dir: Path,
     method: str,
     params: dict[str, Any],
+    *,
+    input_missing: bool = False,
 ) -> bool:
     """
     Forward a terminal-observed Codex turn completion/failure event.
@@ -3926,10 +3961,17 @@ async def _handle_terminal_turn_event(
     :param bridge_dir: Native Codex bridge directory.
     :param method: Codex method, e.g. ``"turn/completed"``.
     :param params: Codex turn event params.
+    :param input_missing: Whether no user message was observed or recovered
+        for this terminal turn.
     :returns: ``True`` when the terminal event belonged to the active
         turn and was forwarded, ``False`` when it was stale.
     """
-    edge = _terminal_turn_status_edge(bridge_dir, method, params)
+    edge = _terminal_turn_status_edge(
+        bridge_dir,
+        method,
+        params,
+        input_missing=input_missing,
+    )
     if edge is None:
         terminal_turn_id = _terminal_turn_id_from_params(params)
         _logger.info(
@@ -3946,6 +3988,8 @@ def _terminal_turn_status_edge(
     bridge_dir: Path,
     method: str,
     params: dict[str, Any],
+    *,
+    input_missing: bool = False,
 ) -> _CodexTurnStatusEdge | None:
     """
     Return the terminal Omnigent edge for a Codex terminal turn event.
@@ -3957,6 +4001,8 @@ def _terminal_turn_status_edge(
     :param bridge_dir: Native Codex bridge directory.
     :param method: Codex terminal method, e.g. ``"turn/completed"``.
     :param params: Codex turn event params.
+    :param input_missing: Whether the forwarder reached this boundary without
+        observing or recovering the turn's user message.
     :returns: Terminal status edge, or ``None`` when the event is stale.
     """
     terminal_turn_id = _terminal_turn_id_from_params(params)
@@ -3982,6 +4028,7 @@ def _terminal_turn_status_edge(
             turn_id=terminal_turn_id,
             source=f"{source}:turn-error",
             error=error,
+            input_missing=input_missing,
         )
     if _turn_status_is_failed(params):
         _logger.info(
@@ -3993,6 +4040,7 @@ def _terminal_turn_status_edge(
             status="failed",
             turn_id=terminal_turn_id,
             source=f"{source}:turn-failed",
+            input_missing=input_missing,
         )
     if method == "turn/completed" and _turn_items_are_empty(params):
         _logger.warning(
@@ -4005,6 +4053,7 @@ def _terminal_turn_status_edge(
         status="idle" if method == "turn/completed" else "failed",
         turn_id=terminal_turn_id,
         source=source,
+        input_missing=input_missing,
     )
 
 
@@ -5615,6 +5664,7 @@ async def _post_status(
     response_id: str | None = None,
     output: str | None = None,
     reauth_required: bool = False,
+    input_missing: bool = False,
 ) -> None:
     """
     Publish a native Codex status edge.
@@ -5630,6 +5680,8 @@ async def _post_status(
     :param reauth_required: When ``True``, mark a ``failed`` edge as caused by
         an authentication error so the surface can prompt a re-auth.
         Surface-only: no automatic ``codex login`` is triggered.
+    :param input_missing: Whether the terminal turn ended before its user
+        message could be observed or recovered.
     :returns: None.
     """
     data: dict[str, Any] = {"status": status}
@@ -5639,6 +5691,8 @@ async def _post_status(
         data["output"] = output
     if reauth_required:
         data["reauth_required"] = True
+    if input_missing:
+        data["input_missing"] = True
     response = await _post_session_event(
         client,
         session_id,
@@ -5690,6 +5744,7 @@ async def _post_turn_status_edge(
         response_id=response_id,
         output=output,
         reauth_required=reauth_required,
+        input_missing=edge.input_missing,
     )
 
 
