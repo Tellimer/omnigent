@@ -107,28 +107,6 @@ class RemoteSandboxLauncher(SandboxLauncher):
             )
         return completed
 
-    def run_background(
-        self,
-        sandbox_id: str,
-        command: str,
-        *,
-        log_path: str = "/tmp/omnigent-host.log",
-    ) -> RemoteCommandResult:
-        del log_path
-        self._ensure_running(sandbox_id)
-        body = self._request(
-            "POST",
-            f"/api/v1/sandbox-runtimes/{sandbox_id}/commands",
-            {"command": command, "detached": True},
-            timeout=30,
-        )
-        result = self._mapping(body.get("result"), "command result")
-        return RemoteCommandResult(
-            returncode=int(result.get("exitCode") or 0),
-            stdout=str(result.get("stdout") or "launched\n"),
-            stderr=str(result.get("stderr") or ""),
-        )
-
     def terminate(self, sandbox_id: str) -> None:
         self._request("DELETE", f"/api/v1/sandbox-runtimes/{sandbox_id}")
 
