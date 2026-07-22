@@ -1,8 +1,8 @@
 """Tests for ``POST /v1/sessions/{id}/switch-agent``.
 
 Exercises the in-place agent-switch endpoint: validation (404 missing
-session, 400 sub-agent / no binding / unloadable bundle, 404 non-bindable
-target, 409 while busy) and the happy-path wiring (it clones the target,
+session, 400 sub-agent / no binding / unloadable bundle, authorized custom
+targets, 409 while busy) and the happy-path wiring (it clones the target,
 computes the same-family model/history/label deltas, and forwards them to
 ``switch_conversation_agent``). Real-type store stubs — no MagicMock.
 """
@@ -871,8 +871,10 @@ async def test_switch_400_sub_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_switch_404_target_not_bindable() -> None:
-    """404 when the target is a session-scoped agent (not a built-in)."""
+async def test_switch_allows_authorized_session_scoped_custom_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-accessible custom agent can become the in-place target."""
     other_session_agent = _agent(
         "8bc4385e0f8fc6477c59127fd15ea45e", "other", "bundle/x", "aef8aa8b6e9cf6eda406cb88cf33708c"
     )
@@ -883,6 +885,12 @@ async def test_switch_404_target_not_bindable() -> None:
             "8bc4385e0f8fc6477c59127fd15ea45e": other_session_agent,
         }
     )
+    _patch_family_helpers(
+        monkeypatch,
+        same_family=True,
+        native=False,
+        labels={},
+    )
     client = TestClient(_build_app(conv_store, agent_store))
 
     resp = client.post(
@@ -890,9 +898,9 @@ async def test_switch_404_target_not_bindable() -> None:
         json={"agent_id": "8bc4385e0f8fc6477c59127fd15ea45e"},
     )
 
-    # Session-scoped target → not bindable, mapped to 404, nothing mutated.
-    assert resp.status_code == 404, resp.text
-    assert conv_store.switch_calls == []
+    assert resp.status_code == 200, resp.text
+    assert len(conv_store.switch_calls) == 1
+    assert conv_store.switch_calls[0]["new_agent_bundle_location"] == "bundle/x"
 
 
 @pytest.mark.asyncio

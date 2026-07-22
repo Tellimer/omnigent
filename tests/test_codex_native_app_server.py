@@ -17,9 +17,11 @@ except ImportError:  # pragma: no cover - Python < 3.11
 from omnigent.codex_native_app_server import (
     _POLICY_HOOK_TIMEOUT_SECONDS,
     CodexNativeAppServer,
+    _codex_mcp_env_passthrough_names,
     _codex_policy_hooks_settings,
     _sync_codex_developer_instructions,
     build_codex_native_server,
+    codex_terminal_env,
     trust_native_policy_hooks,
 )
 from omnigent.codex_native_hook import _EVALUATE_POLICY_TIMEOUT_S
@@ -109,6 +111,30 @@ def test_sync_developer_instructions_skips_invalid_config(tmp_path: Path) -> Non
     _sync_codex_developer_instructions(codex_home, "Rename the session.")
 
     assert config_path.read_text(encoding="utf-8") == "invalid = ["
+
+
+def test_codex_mcp_env_passthrough_names_reads_explicit_references(tmp_path: Path) -> None:
+    """Only valid env names explicitly referenced by MCP config pass through."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """\
+[mcp_servers.tellimer]
+url = "https://mcp.example.test"
+bearer_token_env_var = "PLATFORM_MCP_GATEWAY_TOKEN"
+env_http_headers = { X-Tenant = "TENANT_ID", Invalid = "not a name" }
+
+[mcp_servers.local]
+command = "local-mcp"
+env_vars = ["LOCAL_MCP_TOKEN", "TENANT_ID", "also-invalid!"]
+""",
+        encoding="utf-8",
+    )
+
+    assert _codex_mcp_env_passthrough_names(config_path) == (
+        "PLATFORM_MCP_GATEWAY_TOKEN",
+        "TENANT_ID",
+        "LOCAL_MCP_TOKEN",
+    )
 
 
 _CWD = "/home/user/repo"
@@ -473,6 +499,43 @@ args = []
             "sys_session_rename": {"approval_mode": "approve"},
         },
     }
+
+
+async def test_start_passes_declared_required_mcp_token_to_server_and_tui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A required HTTP MCP bearer env reaches both native Codex processes."""
+    real_codex_home = tmp_path / "real-codex-home"
+    real_codex_home.mkdir()
+    (real_codex_home / "config.toml").write_text(
+        """\
+[mcp_servers.tellimer]
+url = "https://mcp.example.test"
+bearer_token_env_var = "PLATFORM_MCP_GATEWAY_TOKEN"
+required = true
+""",
+        encoding="utf-8",
+    )
+    codex_home = tmp_path / "codex-home"
+    bridge_dir = tmp_path / "bridge"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_codex_home))
+    monkeypatch.setenv("PLATFORM_MCP_GATEWAY_TOKEN", "test-token")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-pass")
+    _disable_codex_startup_rpc(monkeypatch)
+
+    server = _test_app_server(tmp_path, codex_home, bridge_dir, workspace)
+    await server.start()
+    try:
+        assert server.mcp_env_passthrough_names == ("PLATFORM_MCP_GATEWAY_TOKEN",)
+        assert server.env["PLATFORM_MCP_GATEWAY_TOKEN"] == "test-token"
+        assert "UNRELATED_SECRET" not in server.env
+        terminal_env = codex_terminal_env(server)
+        assert terminal_env["PLATFORM_MCP_GATEWAY_TOKEN"] == "test-token"
+        assert "UNRELATED_SECRET" not in terminal_env
+    finally:
+        await server.close()
 
 
 async def test_start_writes_fresh_mcp_config_without_leading_blanks(

@@ -64,7 +64,11 @@ _SUBSCRIBE_RETRY_DELAY_SECONDS = 0.2
 # How long to wait for a freshly launched Codex TUI to create its
 # app-server thread (emit ``thread/started``) before giving up. Generous
 # because a host-spawned TUI cold-starts over the runner.
-_THREAD_START_TIMEOUT_SECONDS = 30.0
+# Managed runners can spend much of the first half-minute starting the Codex
+# TUI and resolving its provider before app-server emits ``thread/started``.
+# Match the executor's bridge-state grace period so a healthy cold start is not
+# recorded as a permanent startup failure just before the thread appears.
+_THREAD_START_TIMEOUT_SECONDS = 60.0
 _NO_ROLLOUT_FRAGMENT = "no rollout found for thread id"
 # A freshly created thread passes through a second transient state: its rollout
 # file exists but is still empty (the TUI created the thread but no turn has

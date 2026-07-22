@@ -77,6 +77,11 @@ describe("shouldShowModelPicker", () => {
     expect(shouldShowModelPicker(null)).toBe(false);
     expect(shouldShowModelPicker(undefined)).toBe(false);
   });
+
+  it("shows the provider-resolved picker for SDK and custom agent harnesses", () => {
+    expect(shouldShowModelPicker({ labels: {} }, "claude-sdk")).toBe(true);
+    expect(shouldShowModelPicker({ labels: {} }, "openai-agents-sdk")).toBe(true);
+  });
 });
 
 describe("shouldShowEffortPicker", () => {

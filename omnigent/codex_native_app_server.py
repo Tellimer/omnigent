@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import tomlkit
+import tomllib
 import websockets
 
 if TYPE_CHECKING:
@@ -87,6 +88,11 @@ _TRUSTED_HOOK_STATUSES = frozenset({"trusted", "managed"})
 # — we detect the old version up front and skip registration with a loud
 # warning rather than crash startup on an un-trustable hook.
 _MIN_POLICY_HOOK_CODEX_VERSION = (0, 129, 0)
+
+# Environment-variable names accepted by subprocess APIs and by Codex's MCP
+# configuration.  Rejecting malformed names keeps config parsing from turning
+# arbitrary TOML values into environment passthrough keys.
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _format_codex_version(version: tuple[int, int, int] | None) -> str:
@@ -334,6 +340,58 @@ def _inject_mcp_server_config(
     config_path.write_text(rendered, encoding="utf-8")
 
 
+def _codex_mcp_env_passthrough_names(config_path: Path) -> tuple[str, ...]:
+    """Return host env names explicitly referenced by Codex MCP config.
+
+    Native Codex processes run with a deliberately filtered environment, but
+    MCP servers can explicitly reference host credentials in ``config.toml``:
+
+    - ``bearer_token_env_var`` for an HTTP MCP bearer token;
+    - ``env_vars`` for stdio MCP environment inheritance;
+    - ``env_http_headers`` values for HTTP headers sourced from the environment.
+
+    Those declarations are an explicit, narrow passthrough request.  Without
+    honoring them, a required MCP server can reject ``thread/start`` even when
+    its credential is present in the runner environment, leaving the web chat
+    to report a misleading startup timeout.
+
+    Invalid TOML and malformed declarations are ignored here; Codex owns their
+    normal config diagnostics.  Names still pass through
+    :func:`_clean_codex_env`, so its exact denylist (notably
+    ``OPENAI_API_KEY``) remains authoritative.
+
+    :param config_path: Materialized per-session Codex config path.
+    :returns: Stable, de-duplicated environment-variable names.
+    """
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return ()
+
+    names: list[str] = []
+
+    def _append(value: object) -> None:
+        if isinstance(value, str) and _ENV_VAR_NAME_RE.fullmatch(value):
+            names.append(value)
+
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        _append(server.get("bearer_token_env_var"))
+        env_vars = server.get("env_vars")
+        if isinstance(env_vars, list):
+            for name in env_vars:
+                _append(name)
+        env_http_headers = server.get("env_http_headers")
+        if isinstance(env_http_headers, dict):
+            for name in env_http_headers.values():
+                _append(name)
+    return tuple(dict.fromkeys(names))
+
+
 class CodexAppServerClient:
     """JSON-RPC client for a Codex app-server.
 
@@ -561,6 +619,9 @@ class CodexNativeAppServer:
         per-session ``config.toml`` at start, or ``None``. Keeps the
         forwarder's config.toml model mirror (and the cost gate's hook
         read) consistent with what the session was launched to run.
+    :param mcp_env_passthrough_names: Runtime field populated from the
+        materialized Codex MCP config. These explicitly-declared host env
+        names are copied into both the app-server and remote TUI.
     :param policy_notice_pending: One-shot flag: ``True`` once a degrade
         reason is recorded, until the runner's terminal-ensure handler
         surfaces it to Omnigent (which posts a single durable banner). Prevents
@@ -586,6 +647,7 @@ class CodexNativeAppServer:
     policy_hook_disabled_reason: str | None = None
     policy_notice_pending: bool = False
     pinned_model: str | None = None
+    mcp_env_passthrough_names: tuple[str, ...] = ()
     process_registry_tag: str | None = None
     process_owner_lock: CodexNativeProcessOwnerLock | None = None
 
@@ -608,6 +670,13 @@ class CodexNativeAppServer:
         # discovers it at config load. The -c overrides may not be honored
         # by `codex app-server`, so we write directly to the file.
         _inject_mcp_server_config(self.codex_home, self.bridge_dir, self.python_executable)
+        self.mcp_env_passthrough_names = _codex_mcp_env_passthrough_names(
+            self.codex_home / "config.toml"
+        )
+        # ``build_codex_native_server`` starts with a conservative env
+        # allowlist before the private config exists.  Once the config is
+        # materialized, add only the env names it explicitly references.
+        self.env.update(_clean_codex_env(self.mcp_env_passthrough_names))
         if self.pinned_model:
             _pin_codex_config_model(self.codex_home, self.pinned_model)
         _sync_codex_developer_instructions(
@@ -1643,13 +1712,26 @@ def codex_terminal_env(app_server: CodexNativeAppServer) -> dict[str, str]:
     """
     Build terminal env overrides for the native Codex TUI.
 
+    In addition to Codex/provider/proxy settings, preserve host environment
+    variables explicitly referenced by the session's MCP config.  The remote
+    TUI creates the thread and initializes required MCP servers independently
+    of the app-server process, so both processes need the same declared
+    credentials.
+
     :param app_server: Running app-server wrapper.
     :returns: Environment variables for the terminal process.
     """
+    mcp_passthrough = set(getattr(app_server, "mcp_env_passthrough_names", ()))
     return {
         key: value
         for key, value in {**app_server.env, "CODEX_HOME": str(app_server.codex_home)}.items()
-        if key in {"CODEX_HOME", "DATABRICKS_HOST", "DATABRICKS_CODEX_TOKEN"}
+        if key
+        in {
+            "CODEX_HOME",
+            "DATABRICKS_HOST",
+            "DATABRICKS_CODEX_TOKEN",
+        }
+        or key in mcp_passthrough
         or key.startswith(("OPENAI_", "HTTP_", "HTTPS_", "NO_PROXY", "ALL_PROXY"))
     }
 

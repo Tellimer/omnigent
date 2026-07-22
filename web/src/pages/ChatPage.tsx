@@ -143,6 +143,7 @@ import { useUserMessageNav } from "@/hooks/useUserMessageNav";
 import { useWorkingLabelTick } from "@/hooks/useWorkingLabelTick";
 import { UserMessageNav } from "@/components/UserMessageNav";
 import { HostBadge } from "@/components/HostBadge";
+import { SwitchAgentDialog } from "@/shell/SwitchAgentDialog";
 import {
   BUILTIN_SLASH_COMMANDS,
   isSlashCommandText,
@@ -1071,7 +1072,10 @@ export function ChatPage() {
   const capabilitySource = {
     labels: activeSession ? (activeSession.labels ?? {}) : (activeConv?.labels ?? {}),
   };
-  const modelPickerKind = modelPickerKindForConv(capabilitySource);
+  const modelPickerKind = modelPickerKindForConv(
+    capabilitySource,
+    activeSession?.harness ?? boundAgentBySession?.harness ?? null,
+  );
   const effortLevels = effortLevelsForConv(
     capabilitySource,
     codexModelOptions,
@@ -1079,10 +1083,9 @@ export function ChatPage() {
   );
   const showEffort = shouldShowEffortPicker(capabilitySource) && effortLevels.length > 0;
 
-  // When inside a session, only show the bound agent — the session is
-  // tied 1:1 to its runner and can't be reassigned. Show all agents on
-  // `/` (no active session) so the picker still works for future CLI-
-  // started sessions.
+  // The model picker stays scoped to the bound agent. In-place agent changes
+  // use SwitchAgentDialog instead: that path validates history compatibility,
+  // resets cross-provider model settings, and rebinds the same session safely.
   // Prefer the full agent object (with mcp_servers) from the session
   // endpoint when viewing a conversation. Fall back to the sessions-
   // derived list for the `/` (no session) picker view.
@@ -3590,8 +3593,8 @@ export function formatModelEffortStatusLabel(
  * name ("Claude" / "Codex"); SDK/bundle agents read as the agent name
  * with the brain harness in parens ("Polly (Pi)"). This moved OUT of the
  * picker trigger (which now shows model/effort) — the trigger is the
- * model/effort control, so the harness identity belongs in the read-only
- * shelf below.
+ * model/effort control, while the harness identity and in-place agent switch
+ * live in the shelf below.
  *
  * @param modelPickerKind - Native picker family, when the session is a
  *   claude-/codex-/cursor-native wrapper.
@@ -3633,6 +3636,8 @@ function ComposerStatusLine({
   goal,
   isSubAgentSession,
   onHostReconnect,
+  onSwitchAgent,
+  switchAgentDisabled = false,
 }: {
   harnessLabel: string | null;
   goal: Goal | null;
@@ -3644,6 +3649,10 @@ function ComposerStatusLine({
    * visible for an unreachable host.
    */
   onHostReconnect?: () => void;
+  /** Open the in-place agent switcher for an idle, editable top-level session. */
+  onSwitchAgent?: () => void;
+  /** Keep the switch affordance visible but inert while the active turn runs. */
+  switchAgentDisabled?: boolean;
 }) {
   const conversationId = useChatStore((s) => s.conversationId);
   const contextWindow = useChatStore((s) => s.contextWindow);
@@ -3724,15 +3733,34 @@ function ComposerStatusLine({
           </span>
         )}
         {showGoal && goal && <GoalStatusPill goal={goal} />}
-        {showHarness && harnessLabel && (
-          <span
-            data-testid="composer-harness"
-            className="max-w-36 truncate text-xs text-muted-foreground sm:max-w-52"
-            title={harnessLabel}
-          >
-            {harnessLabel}
-          </span>
-        )}
+        {showHarness &&
+          harnessLabel &&
+          (onSwitchAgent ? (
+            <button
+              type="button"
+              data-testid="composer-harness"
+              onClick={onSwitchAgent}
+              disabled={switchAgentDisabled}
+              className="inline-flex h-6 max-w-36 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground sm:max-w-52"
+              title={
+                switchAgentDisabled
+                  ? "Wait for the current turn to finish before switching agent"
+                  : `Switch agent from ${harnessLabel}`
+              }
+              aria-label={`Switch agent from ${harnessLabel}`}
+            >
+              <span className="min-w-0 truncate">{harnessLabel}</span>
+              <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+            </button>
+          ) : (
+            <span
+              data-testid="composer-harness"
+              className="max-w-36 truncate text-xs text-muted-foreground sm:max-w-52"
+              title={harnessLabel}
+            >
+              {harnessLabel}
+            </span>
+          ))}
         {showRing && <ContextRing contextWindow={contextWindow} tokensUsed={tokensUsed} />}
       </div>
     </div>
@@ -3854,6 +3882,7 @@ export function Composer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [planModeBusy, setPlanModeBusy] = useState(false);
+  const [switchAgentOpen, setSwitchAgentOpen] = useState(false);
   // Index of the highlighted item in the slash-command suggestions menu.
   // -1 means no item highlighted (menu closed or no matches). When the menu
   // opens with matches the reset logic below pre-selects the first item (0)
@@ -4420,15 +4449,10 @@ export function Composer({
       // the user choose there. "/model <name>" takes the builtin route below to
       // setModel — the same write the picker makes.
       //
-      // opencode-native now surfaces server-backed model options too, so bare
-      // "/model" opens the picker when options are loaded. When the options are
-      // still empty (e.g. the runner catalog hasn't arrived yet), fall through
-      // to the builtin "/model" handler, which surfaces the current model as a
-      // read-only hint instead of popping an empty dropdown. ("/model <name>"
-      // still routes to setModel there — opencode reads model_override on the
-      // next web-injected turn.)
-      const canOpenModelPicker = modelPickerKind !== "opencode" || codexModelOptions.length > 0;
-      if (cmd === "/model" && !arg && showModels && canOpenModelPicker) {
+      // Runner-backed pickers remain useful before their catalog arrives: the
+      // dropdown shows a loading/retry row and opening it re-runs discovery.
+      // This is especially important during Codex app-server startup.
+      if (cmd === "/model" && !arg && showModels) {
         dirtyRef.current = true;
         setValue("");
         setCommandError(null);
@@ -5047,7 +5071,16 @@ export function Composer({
         goal={goal}
         isSubAgentSession={subAgentLabel != null}
         onHostReconnect={hostOffline ? onShowReconnectHelp : undefined}
+        onSwitchAgent={
+          conversationId !== null && subAgentLabel === null && !isReadOnly
+            ? () => setSwitchAgentOpen(true)
+            : undefined
+        }
+        switchAgentDisabled={isWorking}
       />
+      {switchAgentOpen && conversationId && (
+        <SwitchAgentDialog sessionId={conversationId} open onOpenChange={setSwitchAgentOpen} />
+      )}
     </form>
   );
 }
@@ -5231,7 +5264,7 @@ const EFFORT_LEVELS = ["low", "medium", "high"] as const;
 /** Anthropic-side efforts for claude-native sessions (matches ANTHROPIC_EFFORTS in reasoning_effort.py). */
 const CLAUDE_NATIVE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-type NativeModelPickerKind = "claude" | "codex" | "cursor" | "kiro" | "opencode" | "pi";
+type NativeModelPickerKind = "claude" | "codex" | "cursor" | "kiro" | "opencode" | "pi" | "sdk";
 
 type LabelSource = { labels?: Record<string, string | null> | null } | null | undefined;
 
@@ -5287,6 +5320,7 @@ export function effortLevelsForConv(
  */
 export function modelPickerKindForConv(
   conv: { labels?: Record<string, string | null> | null } | null | undefined,
+  harness: string | null = null,
 ): NativeModelPickerKind | null {
   switch (conv?.labels?.["omnigent.wrapper"]) {
     case "claude-code-native-ui":
@@ -5312,14 +5346,19 @@ export function modelPickerKindForConv(
       // model_select handler, so the picker surfaces that as the live model.
       return "pi";
     default:
-      return null;
+      // SDK/bundle agents (Polly, Debby, and custom agents) honor the
+      // session's persisted model_override on the next turn. Their compatible
+      // model list comes from the bound runner's provider-resolved `self`
+      // catalog rather than a copied Web UI table.
+      return conv?.labels?.["omnigent.wrapper"] == null && harness ? "sdk" : null;
   }
 }
 
 export function shouldShowModelPicker(
   conv: { labels?: Record<string, string | null> | null } | null | undefined,
+  harness: string | null = null,
 ): boolean {
-  return modelPickerKindForConv(conv) !== null;
+  return modelPickerKindForConv(conv, harness) !== null;
 }
 
 /**
@@ -5433,7 +5472,7 @@ function AgentPicker({
   const sessionModelOverride = useChatStore((s) => s.sessionModelOverride);
   const llmModel = useChatStore((s) => s.llmModel);
 
-  // Codex, cursor, kiro, pi, and opencode all populate the picker from the
+  // Codex, cursor, kiro, pi, opencode, and SDK agents populate the picker from the
   // server-provided ``codexModelOptions`` channel (the snapshot's
   // ``model_options`` field); claude uses the static local catalog.
   const usesServerModelOptions =
@@ -5441,14 +5480,22 @@ function AgentPicker({
     modelPickerKind === "cursor" ||
     modelPickerKind === "kiro" ||
     modelPickerKind === "pi" ||
-    modelPickerKind === "opencode";
+    modelPickerKind === "opencode" ||
+    modelPickerKind === "sdk";
   const modelOptions: ReadonlyArray<{ id: string; label?: string; displayName?: string }> =
     modelPickerKind === "claude"
       ? CLAUDE_NATIVE_MODELS
       : usesServerModelOptions
         ? codexModelOptions
         : [];
-  const isNativeModelPicker = modelPickerKind !== null;
+  useEffect(() => {
+    if (!open || !usesServerModelOptions || modelOptions.length > 0) return;
+    void useChatStore
+      .getState()
+      .refreshSessionState()
+      .catch(() => {});
+  }, [open, usesServerModelOptions, modelOptions.length]);
+  const isNativeModelPicker = modelPickerKind !== null && modelPickerKind !== "sdk";
   // Only offer the agent list when there's an actual choice. Inside a
   // session the picker is scoped to the single bound agent (the runner is
   // tied 1:1 to it and can't be reassigned), so a one-row "Agents" section
@@ -5496,7 +5543,7 @@ function AgentPicker({
   // on a Claude-SDK agent like Polly). claude-/codex-native keep `selectedModel`:
   // there the sticky IS the applied model.
   const nonNativeModel =
-    modelPickerKind === null
+    modelPickerKind === null || modelPickerKind === "sdk"
       ? (sessionModelOverride ?? llmModel)
       : (sessionModelOverride ?? selectedModel ?? llmModel);
   const effectiveModel = nativeVendorOwnsModel
@@ -5518,7 +5565,11 @@ function AgentPicker({
     showEffort && selectedEffort
       ? formatStatusEffortLabel(selectedEffort, modelPickerKind === "codex")
       : null;
-  const hasPickerActions = showAgents || modelOptions.length > 0 || showEffort;
+  // Keep the control visible while a live runner-backed catalog is still
+  // loading. Otherwise a transient startup miss removes the only recovery
+  // affordance and makes the session look permanently model-locked.
+  const hasPickerActions =
+    showAgents || modelOptions.length > 0 || showEffort || usesServerModelOptions;
 
   // Before kiro/pi resolve a live model, there is no model to show: kiro until
   // its first session ``.json`` write, pi until its snapshot fills llmModel (or
@@ -5647,11 +5698,33 @@ function AgentPicker({
             })}
           </>
         )}
+        {usesServerModelOptions && modelOptions.length === 0 && (
+          <>
+            {!isNativeModelPicker && showAgents && <DropdownMenuSeparator className="my-1" />}
+            <PickerSectionHeader>Models</PickerSectionHeader>
+            <DropdownMenuItem
+              data-testid="model-picker-retry"
+              onSelect={() =>
+                void useChatStore
+                  .getState()
+                  .refreshSessionState()
+                  .catch(() => {})
+              }
+              className="items-center gap-2 rounded-sm px-2 py-1.5 text-xs"
+            >
+              <Loader2Icon className="size-3.5 shrink-0" />
+              <span className="flex-1">Models are still loading</span>
+              <span className="text-muted-foreground">Retry</span>
+            </DropdownMenuItem>
+          </>
+        )}
         {/* Skip the leading rule when Effort is the only section, so the
             dropdown doesn't open with a stray divider at the top. */}
         {showEffort && (
           <>
-            {(showAgents || modelOptions.length > 0) && <DropdownMenuSeparator className="my-1" />}
+            {(showAgents || modelOptions.length > 0 || usesServerModelOptions) && (
+              <DropdownMenuSeparator className="my-1" />
+            )}
             <PickerSectionHeader>Effort</PickerSectionHeader>
             {effortLevels.map((level) => (
               <DropdownMenuItem

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chatStore";
@@ -47,6 +47,10 @@ vi.mock("@/lib/agentLabels", async (importOriginal) => ({
     antigravity: "Antigravity",
     copilot: "Copilot",
   }),
+}));
+vi.mock("@/shell/SwitchAgentDialog", () => ({
+  SwitchAgentDialog: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="switch-agent-dialog" /> : null,
 }));
 
 import { Composer, composerHarnessLabel, formatModelEffortStatusLabel } from "./ChatPage";
@@ -184,6 +188,30 @@ describe("Composer status line (branch + context ring)", () => {
     expect(harness.compareDocumentPosition(ring) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it("opens the in-place agent switcher from the active agent label", () => {
+    renderComposer({
+      agents: [{ id: "a1", name: "codex" }],
+      selectedAgentId: "a1",
+      modelPickerKind: "codex",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch agent from Codex" }));
+    expect(screen.getByTestId("switch-agent-dialog")).toBeInTheDocument();
+  });
+
+  it("keeps agent switching unavailable while a turn is running", () => {
+    renderComposer({
+      isWorking: true,
+      agents: [{ id: "a1", name: "codex" }],
+      selectedAgentId: "a1",
+      modelPickerKind: "codex",
+    });
+
+    const switchButton = screen.getByRole("button", { name: "Switch agent from Codex" });
+    expect(switchButton).toBeDisabled();
+    expect(switchButton).toHaveTextContent("Codex");
   });
 
   it("shows the agent + brain harness identity for SDK sessions", () => {

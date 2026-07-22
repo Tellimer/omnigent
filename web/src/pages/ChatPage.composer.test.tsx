@@ -659,6 +659,62 @@ describe("AgentPicker trigger label", () => {
     expect(trigger).toHaveTextContent("Claude");
   });
 
+  it("keeps a server-backed picker visible and retryable while its catalog loads", () => {
+    const refreshSessionState = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      selectedModel: null,
+      selectedEffort: null,
+      llmModel: null,
+      refreshSessionState,
+    });
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          agents: [{ id: "a1", name: "codex" }],
+          selectedAgentId: "a1",
+          modelPickerKind: "codex",
+          showModels: true,
+          showEffort: false,
+          codexModelOptions: [],
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-picker-trigger")).toBeEnabled();
+    fireEvent.change(textarea(), { target: { value: "/model " } });
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+
+    expect(screen.getByTestId("model-picker-retry")).toHaveTextContent("Models are still loading");
+    expect(refreshSessionState).toHaveBeenCalledWith();
+  });
+
+  it("offers the runner-resolved model catalog for SDK agents", () => {
+    const setModel = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({ setModel, llmModel: "claude-sonnet-4-6" });
+    renderWithTooltips(
+      <Composer
+        {...composerProps({
+          agents: [{ id: "a1", name: "polly" }],
+          selectedAgentId: "a1",
+          modelPickerKind: "sdk",
+          showModels: true,
+          showEffort: false,
+          codexModelOptions: [{ id: "claude-sonnet-4-6" }, { id: "claude-opus-4-8" }],
+        })}
+      />,
+    );
+
+    fireEvent.change(textarea(), { target: { value: "/model " } });
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+    fireEvent.click(
+      document.querySelector<HTMLElement>(
+        '[data-testid="model-picker-item"][data-model-id="claude-opus-4-8"]',
+      )!,
+    );
+
+    expect(setModel).toHaveBeenCalledWith("claude-opus-4-8");
+  });
+
   it("surfaces a cursor-native session's model from the override, not the cross-session sticky", () => {
     // cursor-native is a vendor-owns-model wrapper, so `nativeVendorOwnsModel`
     // is true and the bound `llmModel` is a meaningless default. Its live model

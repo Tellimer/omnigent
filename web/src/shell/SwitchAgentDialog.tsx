@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { switchSessionAgent } from "@/lib/sessionsApi";
-import { useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { prefetchAvailableAgentDetails, useAvailableAgents } from "@/hooks/useAvailableAgents";
 import { useSessionAgent } from "@/hooks/useAgents";
 import { agentRootName, harnessFamily, switchTargetCarriesHistory } from "@/lib/forkHarness";
 
@@ -30,10 +30,6 @@ const NONE_CHOSEN = "";
 
 /**
  * Switch an open session in place to a different agent/harness.
- *
- * NOTE: currently unmounted — the header's "Switch agent" button was
- * removed, but the dialog (and its `/v1/sessions/{id}/switch-agent`
- * plumbing) is kept, tested, for when the affordance returns.
  *
  * Unlike Clone (fork), this keeps the SAME session — transcript, comments,
  * files, and workspace are untouched; only the agent/harness changes, and
@@ -64,11 +60,22 @@ export function SwitchAgentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Built-in switch targets + the session's currently-bound agent (for its
-  // harness, so we offer only history-preserving targets and warn when a
-  // cross-family switch resets model settings). Only fetched while open.
+  // Built-in, registered, and caller-accessible session agents + the current
+  // binding. Only fetched while open.
   const { data: agents } = useAvailableAgents({ enabled: open });
   const { data: currentAgent } = useSessionAgent(open ? sessionId : null);
+
+  // Session-discovered custom agents initially carry only name + owning
+  // session id. Resolve their harnesses while the dialog is open so the
+  // history-preservation filter can include compatible custom targets.
+  useEffect(() => {
+    if (!open || !agents) return;
+    for (const agent of agents) {
+      if (agent.sessionId && agent.harness === null) {
+        void prefetchAvailableAgentDetails(agent, queryClient);
+      }
+    }
+  }, [agents, open, queryClient]);
 
   // The bound agent stripped of EVERY " (fork <id>)" / " (switch <id>)"
   // suffix the fork/switch routes append when cloning (a fork of a fork

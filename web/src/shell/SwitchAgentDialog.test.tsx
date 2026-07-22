@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { switchSessionAgent } from "@/lib/sessionsApi";
-import { useAvailableAgents } from "@/hooks/useAvailableAgents";
+import { prefetchAvailableAgentDetails, useAvailableAgents } from "@/hooks/useAvailableAgents";
 import { useSessionAgent } from "@/hooks/useAgents";
 
 vi.mock("@/lib/sessionsApi", () => ({ switchSessionAgent: vi.fn() }));
@@ -16,6 +16,7 @@ vi.mock("@/hooks/useAgents", () => ({ useSessionAgent: vi.fn() }));
 
 const switchSessionAgentMock = vi.mocked(switchSessionAgent);
 const useAvailableAgentsMock = vi.mocked(useAvailableAgents);
+const prefetchAvailableAgentDetailsMock = vi.mocked(prefetchAvailableAgentDetails);
 const useSessionAgentMock = vi.mocked(useSessionAgent);
 
 // One agent per shape so the history-preservation filter is exercised:
@@ -81,6 +82,7 @@ function openAgentSelect(): void {
 
 beforeEach(() => {
   switchSessionAgentMock.mockReset();
+  prefetchAvailableAgentDetailsMock.mockReset().mockResolvedValue(undefined);
   // Default: the session currently runs claude-sdk (anthropic).
   setAgents({ id: "ag_source", name: "source", harness: "claude-sdk" });
 });
@@ -104,6 +106,47 @@ describe("SwitchAgentDialog", () => {
     expect(screen.getByTestId("switch-agent-option-ag_openai")).toBeInTheDocument();
     // Cross-family codex-native carries history via rebuild-from-items.
     expect(screen.getByTestId("switch-agent-option-ag_codex_native")).toBeInTheDocument();
+  });
+
+  it("resolves caller-accessible custom agents before filtering", async () => {
+    const custom = {
+      id: "ag_custom",
+      name: "researcher",
+      display_name: "Researcher",
+      description: null,
+      harness: null,
+      sessionId: "conv_custom_owner",
+      skills: [],
+    };
+    useAvailableAgentsMock.mockReturnValue({
+      data: [...AVAILABLE_AGENTS, custom],
+    } as unknown as ReturnType<typeof useAvailableAgents>);
+    renderDialog();
+
+    await waitFor(() =>
+      expect(prefetchAvailableAgentDetailsMock).toHaveBeenCalledWith(custom, expect.anything()),
+    );
+  });
+
+  it("offers a compatible custom agent after its harness is resolved", () => {
+    useAvailableAgentsMock.mockReturnValue({
+      data: [
+        ...AVAILABLE_AGENTS,
+        {
+          id: "ag_custom",
+          name: "researcher",
+          display_name: "Researcher",
+          description: null,
+          harness: "claude-sdk",
+          sessionId: "conv_custom_owner",
+          skills: [],
+        },
+      ],
+    } as unknown as ReturnType<typeof useAvailableAgents>);
+    renderDialog();
+    openAgentSelect();
+
+    expect(screen.getByTestId("switch-agent-option-ag_custom")).toHaveTextContent("Researcher");
   });
 
   it("hides fork-only preamble targets (cursor/opencode) but offers hermes", () => {

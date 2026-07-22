@@ -1250,6 +1250,101 @@ async def test_session_snapshot_retries_503_model_options(
 
 
 @pytest.mark.asyncio
+async def test_fetch_model_options_uses_runner_self_catalog_for_sdk_agents() -> None:
+    """SDK agents expose only their own provider-compatible model row."""
+    from omnigent.server.routes import sessions as _mod
+
+    _mod._model_options_cache.clear()
+    _mod._model_options_inflight.clear()
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "workers": {
+                    "researcher": {"models": [{"id": "gpt-5.5"}]},
+                    "self": {
+                        "source": "gateway",
+                        "verified": True,
+                        "models": [
+                            {"id": "claude-sonnet-4-6", "family": "claude"},
+                            {"id": "claude-opus-4-8", "family": "claude"},
+                        ],
+                    },
+                }
+            }
+
+    class _FakeRunnerClient:
+        def __init__(self) -> None:
+            self.get_calls: list[str] = []
+
+        async def get(self, url: str, timeout: float = 5.0) -> _FakeResponse:
+            del timeout
+            self.get_calls.append(url)
+            return _FakeResponse()
+
+    session_id = "sdk_model_catalog_session"
+    conv = Conversation(
+        id=session_id,
+        created_at=1,
+        updated_at=1,
+        root_conversation_id=session_id,
+        labels={},
+    )
+    fake_client = _FakeRunnerClient()
+
+    first = await _mod._fetch_model_options(fake_client, session_id, conv)
+    assert first == []
+    await _drain_model_options(session_id)
+    loaded = await _mod._fetch_model_options(fake_client, session_id, conv)
+
+    assert fake_client.get_calls == [f"/v1/sessions/{session_id}/models"]
+    assert [model["id"] for model in loaded] == [
+        "claude-sonnet-4-6",
+        "claude-opus-4-8",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_load_model_options_retries_runner_connection_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold runner connection failure does not permanently hide models."""
+    from omnigent.server.routes import sessions as _mod
+
+    _mod._model_options_cache.clear()
+    monkeypatch.setattr(_mod, "_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S", (0.0,))
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"models": [{"id": "gpt-5.5", "displayName": "GPT-5.5"}]}
+
+    class _FakeRunnerClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, url: str, timeout: float = 5.0) -> _FakeResponse:
+            del url, timeout
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionError("runner still starting")
+            return _FakeResponse()
+
+    fake_client = _FakeRunnerClient()
+    await _mod._load_model_options(
+        fake_client,
+        "connection_retry_session",
+        "/v1/sessions/connection_retry_session/codex-model-options",
+    )
+
+    assert fake_client.calls == 2
+    assert [m["id"] for m in _mod._model_options_cache["connection_retry_session"]] == ["gpt-5.5"]
+
+
+@pytest.mark.asyncio
 async def test_session_snapshot_publishes_skills_event_when_fetch_resolves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

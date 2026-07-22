@@ -1199,7 +1199,11 @@ _runner_skills_inflight: dict[str, asyncio.Task[None]] = {}
 # (``model/list``) off the hot path, same shape as runner skills.
 _model_options_cache: dict[str, list[dict[str, Any]]] = {}
 _model_options_inflight: dict[str, asyncio.Task[None]] = {}
-_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 2.0, 2.0)
+# A native app-server or provider catalog may not become reachable until the
+# session's runner has finished a cold sandbox/CLI startup. Keep discovery
+# alive across Codex's thread-start window; the work is backgrounded
+# and single-flight, so snapshots remain fast while this retries.
+_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 15.0)
 # Per-session model catalog PUSHED by a native harness's extension
 # (``external_model_options``), as opposed to the runner-fetched
 # ``_model_options_cache`` above. Kept in a separate cache that a browser
@@ -16802,13 +16806,13 @@ def create_sessions_router(
         Unlike fork, this keeps the SAME session — transcript, comments,
         files, host, and workspace are untouched; only the agent/harness
         changes. The current session-scoped agent is replaced by a clone
-        of the target built-in, model settings carry over only within the
+        of the target agent, model settings carry over only within the
         same provider family (a model id is provider-bound), the native
         runtime session id is cleared, and the harness-presentation labels
         are recomputed for the target. The next turn cold-starts the new
         harness (rebuilding the native transcript from this session's own
-        items for a same-family native target). Only built-in agents are
-        bindable, and only while the session is idle.
+        items for a same-family native target). Built-in, registered, and
+        caller-accessible session agents are bindable while the session is idle.
 
         :param request: The incoming FastAPI request (for auth).
         :param session_id: Session/conversation identifier to switch,
@@ -16817,7 +16821,8 @@ def create_sessions_router(
         :returns: A :class:`SessionResponse` describing the session after
             the switch (status ``"idle"``).
         :raises OmnigentError: 404 if the session or target agent does
-            not exist or the target is not a bindable built-in; 403 if the
+            not exist; 403 if the target is session-scoped and the caller
+            cannot read its owning session, or if the
             caller lacks edit access; 400 if the session is a sub-agent,
             has no agent binding, or the target bundle can't be loaded;
             409 if a turn is currently running.
@@ -16861,15 +16866,17 @@ def create_sessions_router(
                 code=ErrorCode.NOT_FOUND,
             )
 
-        # Only built-in agents (``session_id IS NULL``) are bindable: a
-        # session-scoped agent belongs to one conversation (possibly another
-        # user's) and must never be cloned across sessions.
-        target_agent = await asyncio.to_thread(agent_store.get, body.agent_id)
-        if target_agent is None or target_agent.session_id is not None:
-            raise OmnigentError(
-                f"Agent not found or not bindable: {body.agent_id!r}",
-                code=ErrorCode.NOT_FOUND,
-            )
+        # Reuse session-create authorization: a session-scoped custom agent is
+        # bindable only when the caller can read its owning session. This lets
+        # users switch to their custom agents without allowing raw-id guesses
+        # to execute somebody else's private bundle.
+        target_agent = await validate_session_agent(
+            user_id=user_id,
+            agent_id=body.agent_id,
+            agent_store=agent_store,
+            permission_store=permission_store,
+            conversation_store=conversation_store,
+        )
 
         # Reject a no-op switch to the built-in the session is already running:
         # its session-scoped clone shares the built-in's ``bundle_location``, so
@@ -16888,7 +16895,10 @@ def create_sessions_router(
         # (deleting the old agent) must not run for a target that can't start.
         try:
             await asyncio.to_thread(
-                get_agent_cache().load, target_agent.id, target_agent.bundle_location
+                get_agent_cache().load,
+                target_agent.id,
+                target_agent.bundle_location,
+                expand_env=target_agent.session_id is None,
             )
         except Exception as exc:
             # Surface any bundle-load failure as a 400 before mutating state.
@@ -22436,7 +22446,7 @@ async def _fetch_model_options(
     conv: Conversation,
 ) -> list[dict[str, Any]]:
     """
-    Resolve the Web UI model-picker options for a native session.
+    Resolve the Web UI model-picker options for a native or SDK session.
 
     Two shapes:
 
@@ -22450,6 +22460,9 @@ async def _fetch_model_options(
       can read (its app-server ``model/list``). Like skills, this stays off the
       snapshot hot path: the first snapshot kicks a background fetch and returns
       ``[]``; subsequent snapshots serve the cache.
+    * **SDK/bundle agents** — the provider-resolved ``self`` row from the
+      runner's ``/models`` catalog. This covers Polly, Debby, and custom agents
+      without copying provider model ids into the Web UI.
 
     :param runner_client: HTTP client pointed at the bound runner, or
         ``None`` when no runner is bound.
@@ -22457,7 +22470,7 @@ async def _fetch_model_options(
         e.g. ``"conv_abc123"``.
     :param conv: Conversation row whose labels identify the wrapper.
     :returns: Model options, or ``[]`` when the session has no model picker or
-        the (codex) options are not yet available.
+        its live options are not yet available.
     """
     wrapper = conv.labels.get(_CLAUDE_NATIVE_WRAPPER_LABEL_KEY)
     if wrapper == _CURSOR_NATIVE_WRAPPER_LABEL_VALUE:
@@ -22478,7 +22491,11 @@ async def _fetch_model_options(
         return _pushed_model_options_cache.get(session_id, [])
     endpoint = _MODEL_OPTIONS_ENDPOINT_BY_WRAPPER.get(wrapper or "")
     if endpoint is None:
-        return []
+        # A missing wrapper label is the normal SDK/bundle-agent presentation.
+        # Known native wrappers without a Web picker still fail closed.
+        if wrapper is not None:
+            return []
+        endpoint = "models"
     if runner_client is None:
         return []
     cached = _model_options_cache.get(session_id)
@@ -22507,9 +22524,19 @@ async def _load_model_options(
     """
     for attempt in range(len(_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S) + 1):
         try:
-            resp = await runner_client.get(path, timeout=5.0)
+            # Provider-backed SDK enumeration may mint a dynamic credential
+            # before querying the model endpoint; its own guarded timeouts can
+            # total more than the native bridge's cheap model/list request.
+            request_timeout = 30.0 if path.endswith("/models") else 5.0
+            resp = await runner_client.get(path, timeout=request_timeout)
         except (httpx.HTTPError, ConnectionError):
             _logger.debug("Runner model-options query failed for %s", session_id)
+            # The runner itself can be between registration and accepting HTTP
+            # during a cold sandbox start. Treat that the same as a 503 from a
+            # booting native bridge instead of permanently ending discovery.
+            if attempt < len(_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S):
+                await asyncio.sleep(_CODEX_MODEL_OPTIONS_RETRY_DELAYS_S[attempt])
+                continue
             return
         if resp.status_code != 200:
             # 503 means the native backend (Codex app-server bridge / cursor
@@ -22520,7 +22547,15 @@ async def _load_model_options(
                 continue
             return
         try:
-            options = _model_options_from_wire(resp.json().get("models", []))
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Runner model-options payload must be an object")
+            raw_models = payload.get("models")
+            if raw_models is None:
+                workers = payload.get("workers", {})
+                self_row = workers.get("self", {}) if isinstance(workers, dict) else {}
+                raw_models = self_row.get("models", []) if isinstance(self_row, dict) else []
+            options = _model_options_from_wire(raw_models)
         except (ValueError, KeyError, TypeError, ValidationError):
             _logger.debug("Runner model-options payload malformed for %s", session_id)
             return
