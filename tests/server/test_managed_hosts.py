@@ -24,6 +24,7 @@ from omnigent.server.managed_hosts import (
     KUBERNETES_MANAGED_TOKEN_TTL_S,
     MODAL_MANAGED_TOKEN_TTL_S,
     OPENSHELL_MANAGED_TOKEN_TTL_S,
+    REMOTE_MANAGED_TOKEN_TTL_S,
     ManagedSandboxConfig,
     RepoWorkspace,
     host_resume_supported,
@@ -210,6 +211,28 @@ def test_parse_daytona_without_section_defaults(
     assert cfg.launcher_factory() is fake
     assert fake.image is None
     assert fake.env is None
+
+
+async def test_parse_remote_controller_config() -> None:
+    """Remote runtimes are a first-class managed provider with a bounded token."""
+    cfg = parse_sandbox_config(
+        {
+            "provider": "remote",
+            "server_url": "https://omnigent.example.com",
+            "remote": {
+                "url": "https://platform.example.com/",
+                "token_env": "PLATFORM_SANDBOX_RUNTIME_TOKEN",
+                "env": ["PLATFORM_GIT_BROKER_URL"],
+            },
+        }
+    )
+    assert cfg is not None
+    assert cfg.provider == "remote"
+    assert cfg.managed_launch_supported is True
+    assert cfg.token_ttl_s == REMOTE_MANAGED_TOKEN_TTL_S
+    launcher = cfg.launcher_factory()
+    assert launcher.provider == "remote"
+    assert launcher.can_resume is True
 
 
 def test_parse_valid_boxlite_cloud_config_builds_parameterized_factory(

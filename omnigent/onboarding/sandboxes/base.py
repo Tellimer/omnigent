@@ -409,6 +409,14 @@ class SandboxLauncher(ABC):
     # of being silently revived onto an empty workspace.
     can_resume: ClassVar[bool] = False
 
+    def set_launch_context(self, *, owner: str, session_id: str | None) -> None:
+        """Bind authenticated launch metadata to this launcher instance.
+
+        Providers that delegate provisioning to an external control plane can
+        override this hook. Direct providers ignore it by default.
+        """
+        del owner, session_id
+
     @abstractmethod
     def prepare(self) -> None:
         """

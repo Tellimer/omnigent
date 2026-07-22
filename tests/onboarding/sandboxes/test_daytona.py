@@ -448,33 +448,13 @@ def test_provision_defaults_official_image_and_uses_1h_autostop(
     [create] = fake_daytona.create_calls
     assert create.params.image == DEFAULT_HOST_IMAGE
     assert create.params.auto_stop_interval == 60
-    assert create.params.env_vars == {
-        "CODEX_HOME": "/root/.codex",
-        "CLAUDE_CONFIG_DIR": "/root/.claude",
-        "OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CODEX_HOME,CLAUDE_CONFIG_DIR",
-    }
+    assert create.params.env_vars is None
     assert create.params.labels == {"omnigent-name": "managed-abc"}
     assert create.params.resources == _FakeResources(cpu=2, memory=4)
     # Cold creates pull + snapshot the image (minutes); the SDK's 60s
     # default only covers the warm path.
     assert create.timeout > 60
     assert create.has_log_callback is True
-
-
-def test_provision_labels_sandbox_with_canonical_session_id(
-    fake_daytona: _FakeDaytonaState,
-) -> None:
-    """Provider dashboard metadata identifies the owning Omnigent session."""
-    launcher = DaytonaSandboxLauncher()
-    launcher.set_platform_session("conv_owner_123")
-
-    launcher.provision("managed-owner")
-
-    [create] = fake_daytona.create_calls
-    assert create.params.labels == {
-        "omnigent-name": "managed-owner",
-        "omnigent-session-id": "conv_owner_123",
-    }
 
 
 def test_provision_image_resolution_order(
@@ -512,9 +492,6 @@ def test_provision_env_passthrough_resolves_from_server_env(
     assert create.params.env_vars == {
         "OPENAI_API_KEY": "sk-test-123",
         "GIT_TOKEN": "ghp-test-456",
-        "CODEX_HOME": "/root/.codex",
-        "CLAUDE_CONFIG_DIR": "/root/.claude",
-        "OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CODEX_HOME,CLAUDE_CONFIG_DIR",
     }
 
 
@@ -536,45 +513,7 @@ def test_provision_env_passthrough_env_var_fallback(
     assert create.params.env_vars == {
         "OPENAI_API_KEY": "sk-test-123",
         "GIT_TOKEN": "ghp-test-456",
-        "CODEX_HOME": "/root/.codex",
-        "CLAUDE_CONFIG_DIR": "/root/.claude",
-        "OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CODEX_HOME,CLAUDE_CONFIG_DIR",
     }
-
-
-def test_provision_attaches_owner_profile_credentials(
-    fake_daytona: _FakeDaytonaState, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The execution owner's volume and secrets are attached to only their sandbox."""
-    launcher = DaytonaSandboxLauncher()
-    launcher.set_platform_owner("alice@example.com")
-    monkeypatch.setattr(
-        launcher,
-        "_resolve_owner_profile",
-        lambda: {
-            "volume": {
-                "id": "vol-personal",
-                "subpath": "users/alice",
-                "mountPath": "/root/.tellimer-auth",
-            },
-            "secrets": {"ANTHROPIC_SETUP_TOKEN": "daytona-secret-ref"},
-        },
-    )
-
-    sandbox_id = launcher.provision("managed-alice")
-
-    [create] = fake_daytona.create_calls
-    assert create.params.volumes == [
-        _FakeVolumeMount(
-            volume_id="vol-personal",
-            mount_path="/root/.tellimer-auth",
-            subpath="users/alice",
-        )
-    ]
-    assert create.params.secrets == {"ANTHROPIC_SETUP_TOKEN": "daytona-secret-ref"}
-    commands = [call.command for call in fake_daytona.sandboxes[sandbox_id].process.exec_calls]
-    assert any("/root/.tellimer-auth/codex/auth.json" in command for command in commands)
-    assert any("codex-auth-sync.log" in command for command in commands)
 
 
 def test_provision_env_passthrough_missing_var_fails_loud(

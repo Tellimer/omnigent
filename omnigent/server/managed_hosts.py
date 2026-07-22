@@ -160,10 +160,21 @@ SUPPORTED_SANDBOX_PROVIDERS: frozenset[str] = frozenset(
         "e2b",
         "openshell",
         "kubernetes",
+        "remote",
     }
 )
 PROVIDERS_WITH_MANAGED_LAUNCH: frozenset[str] = frozenset(
-    {"modal", "daytona", "boxlite", "cwsandbox", "islo", "e2b", "openshell", "kubernetes"}
+    {
+        "modal",
+        "daytona",
+        "boxlite",
+        "cwsandbox",
+        "islo",
+        "e2b",
+        "openshell",
+        "kubernetes",
+        "remote",
+    }
 )
 
 # How long a managed launch waits for the sandboxed host to register
@@ -217,6 +228,10 @@ OPENSHELL_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
 # reconnects while still expiring tokens of Pods nobody deleted. A relaunch
 # mints a fresh token (and the per-Pod token Secret is replaced).
 KUBERNETES_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
+
+# Remote controllers own the backing provider lifecycle. Keep Omnigent's host
+# token bounded while allowing a stopped runtime to resume in place.
+REMOTE_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
 
 # The cwsandbox launch-token TTL is NOT a constant: CW Sandbox's lifetime is
 # operator-overridable (OMNIGENT_CWSANDBOX_MAX_LIFETIME_S), so the TTL is
@@ -833,6 +848,13 @@ def parse_sandbox_config(raw: object) -> ManagedSandboxConfig | None:
             resources=_parse_kubernetes_resources(raw),
         )
         token_ttl_s = KUBERNETES_MANAGED_TOKEN_TTL_S
+    elif provider == "remote":
+        launcher_factory = _remote_launcher_factory(
+            url=_parse_provider_string(raw, "remote", "url"),
+            token_env=_parse_provider_string(raw, "remote", "token_env"),
+            env=_parse_provider_env(raw, "remote"),
+        )
+        token_ttl_s = REMOTE_MANAGED_TOKEN_TTL_S
     else:
         launcher_factory = _unsupported_launcher_factory(provider)
         # Never consulted (the factory rejects before any token is
@@ -944,6 +966,24 @@ def _daytona_launcher_factory(
         from omnigent.onboarding.sandboxes.daytona import DaytonaSandboxLauncher
 
         return DaytonaSandboxLauncher(image=image, env=env)
+
+    return _build
+
+
+def _remote_launcher_factory(
+    *,
+    url: str | None,
+    token_env: str | None,
+    env: list[str] | None,
+) -> Callable[[], SandboxLauncher]:
+    """Build a launcher that delegates lifecycle operations over HTTP."""
+    if url is None:
+        raise ValueError("server config 'sandbox.remote.url' is required")
+
+    def _build() -> SandboxLauncher:
+        from omnigent.onboarding.sandboxes.remote import RemoteSandboxLauncher
+
+        return RemoteSandboxLauncher(url=url, token_env=token_env, env=env)
 
     return _build
 
@@ -1891,12 +1931,7 @@ async def launch_managed_host(
         startup, or registration fails.
     """
     launcher = config.launcher_factory()
-    owner_setter = getattr(launcher, "set_platform_owner", None)
-    if callable(owner_setter):
-        owner_setter(owner)
-    session_setter = getattr(launcher, "set_platform_session", None)
-    if session_id is not None and callable(session_setter):
-        session_setter(session_id)
+    launcher.set_launch_context(owner=owner, session_id=session_id)
     host_id = uuid.uuid4().hex
     # Visible label in the host picker; (owner, name) is the hosts
     # table PK, so embed the host_id's leading hex for uniqueness
@@ -1977,12 +2012,7 @@ async def relaunch_managed_host(
                 "was launched with is no longer configured on this server"
             ),
         )
-    owner_setter = getattr(launcher, "set_platform_owner", None)
-    if callable(owner_setter):
-        owner_setter(host.user_id)
-    session_setter = getattr(launcher, "set_platform_session", None)
-    if session_id is not None and callable(session_setter):
-        session_setter(session_id)
+    launcher.set_launch_context(owner=host.user_id, session_id=session_id)
     # The old generation is normally already dead (that is why we are
     # here), but terminate defensively so a transient tunnel outage
     # can never leave two live sandboxes claiming one host identity.
