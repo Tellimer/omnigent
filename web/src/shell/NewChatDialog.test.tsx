@@ -1724,8 +1724,7 @@ describe("NewChatLandingScreen", () => {
       expect(screen.getByTestId("new-chat-landing-host-chip").textContent).toContain("New Sandbox"),
     );
     fireEvent.click(screen.getByTestId("new-chat-landing-repo-chip"));
-    openSelect("new-chat-landing-repo-preset");
-    fireEvent.click(screen.getByText("Sentinel v4"));
+    fireEvent.click(screen.getByTestId("new-chat-landing-repo-preset-sentinel-v4"));
 
     expect((screen.getByTestId("new-chat-landing-repo-input") as HTMLInputElement).value).toBe(
       "https://github.com/Tellimer/spectra.git",
@@ -1736,6 +1735,28 @@ describe("NewChatLandingScreen", () => {
     expect(screen.getByTestId("new-chat-landing-repo-chip").textContent).toContain(
       "spectra#staging",
     );
+    expect(
+      screen.getByTestId("new-chat-landing-repo-preset-sentinel-v4").getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("shows the repository default when a custom branch is left empty", async () => {
+    renderLanding({ managed_sandboxes_enabled: true });
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-host-chip").textContent).toContain("New Sandbox"),
+    );
+    fireEvent.click(screen.getByTestId("new-chat-landing-repo-chip"));
+    fireEvent.click(screen.getByTestId("new-chat-landing-repo-preset-custom"));
+
+    expect((screen.getByTestId("new-chat-landing-repo-input") as HTMLInputElement).value).toBe("");
+    const branchInput = screen.getByTestId(
+      "new-chat-landing-repo-branch-input",
+    ) as HTMLInputElement;
+    expect(branchInput.value).toBe("");
+    expect(branchInput.placeholder).toBe("Use repository default");
+    expect(
+      screen.getByTestId("new-chat-landing-repo-preset-custom").getAttribute("aria-checked"),
+    ).toBe("true");
   });
 
   it("shows host-provided git credentials tooltip content in the sandbox repo popover", async () => {

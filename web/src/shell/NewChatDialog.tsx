@@ -150,7 +150,6 @@ import { buildAgentBundle, type AgentBundleInput } from "@/lib/agentBundle";
 import { createBundledSession, launchRunner } from "@/lib/sessionsApi";
 import {
   readLastTellimerRepository,
-  repositoryPresetById,
   repositoryPresetFor,
   TELLIMER_REPOSITORIES,
   writeLastTellimerRepository,
@@ -3748,99 +3747,178 @@ export function NewChatLandingScreen() {
                       <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
                     </button>
                   </PopoverTrigger>
-                  <PopoverContent align="start" className="w-96 p-3">
-                    <div className="flex flex-col gap-2">
+                  <PopoverContent
+                    align="start"
+                    sideOffset={8}
+                    collisionPadding={16}
+                    className="max-h-[var(--radix-popover-content-available-height)] w-[min(400px,calc(100vw-2rem))] gap-0 overflow-y-auto p-0"
+                  >
+                    <div className="border-b border-border/70 px-4 py-3">
+                      <p className="text-sm font-medium text-foreground">Repository</p>
+                      <p className="mt-0.5 text-xs leading-4 text-muted-foreground">
+                        Choose the codebase and source branch for this sandbox.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1 p-2" role="radiogroup" aria-label="Tellimer project">
+                      {TELLIMER_REPOSITORIES.map((repository) => {
+                        const selected = selectedRepositoryPreset?.id === repository.id;
+                        return (
+                          <button
+                            key={repository.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            onClick={() => {
+                              setSandboxRepoUrl(repository.url);
+                              setSandboxRepoBranch(repository.branch);
+                              writeLastTellimerRepository(repository.id);
+                            }}
+                            className={cn(
+                              "group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
+                              selected
+                                ? "border-border bg-accent/70"
+                                : "border-transparent hover:border-border/70 hover:bg-accent/40",
+                            )}
+                            data-testid={`new-chat-landing-repo-preset-${repository.id}`}
+                          >
+                            <span
+                              className={cn(
+                                "flex size-8 shrink-0 items-center justify-center rounded-lg border",
+                                selected
+                                  ? "border-foreground/15 bg-background text-foreground"
+                                  : "border-border/70 bg-muted/50 text-muted-foreground group-hover:text-foreground",
+                              )}
+                            >
+                              <GitBranchIcon className="size-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center gap-2">
+                                <span className="truncate text-sm font-medium text-foreground">
+                                  {repository.label}
+                                </span>
+                                <span className="shrink-0 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
+                                  {repository.branch}
+                                </span>
+                              </span>
+                              <span className="mt-0.5 block truncate text-[11px] leading-4 text-muted-foreground">
+                                {repository.description}
+                              </span>
+                            </span>
+                            <CheckIcon
+                              className={cn(
+                                "size-4 shrink-0 transition-opacity",
+                                selected
+                                  ? "text-foreground opacity-100"
+                                  : "text-muted-foreground opacity-0",
+                              )}
+                            />
+                          </button>
+                        );
+                      })}
+
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={selectedRepositoryPreset == null}
+                        onClick={() => {
+                          setSandboxRepoUrl("");
+                          setSandboxRepoBranch("");
+                        }}
+                        className={cn(
+                          "group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30",
+                          selectedRepositoryPreset == null
+                            ? "border-border bg-accent/70"
+                            : "border-transparent hover:border-border/70 hover:bg-accent/40",
+                        )}
+                        data-testid="new-chat-landing-repo-preset-custom"
+                      >
+                        <span
+                          className={cn(
+                            "flex size-8 shrink-0 items-center justify-center rounded-lg border",
+                            selectedRepositoryPreset == null
+                              ? "border-foreground/15 bg-background text-foreground"
+                              : "border-border/70 bg-muted/50 text-muted-foreground group-hover:text-foreground",
+                          )}
+                        >
+                          <PlusIcon className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium text-foreground">
+                            Custom repository
+                          </span>
+                          <span className="mt-0.5 block truncate text-[11px] leading-4 text-muted-foreground">
+                            Enter any Git URL and an optional branch.
+                          </span>
+                        </span>
+                        <CheckIcon
+                          className={cn(
+                            "size-4 shrink-0 transition-opacity",
+                            selectedRepositoryPreset == null
+                              ? "text-foreground opacity-100"
+                              : "text-muted-foreground opacity-0",
+                          )}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2.5 border-t border-border/70 bg-muted/10 px-4 py-3">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <label
+                            htmlFor="landing-repo-url"
+                            className="text-xs font-medium text-foreground"
+                          >
+                            Repository URL
+                          </label>
+                          {databricksGitCredentialsTooltipContent && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
+                                  aria-label="How to set up Databricks git credentials"
+                                >
+                                  <CircleHelpIcon className="size-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-64">
+                                {databricksGitCredentialsTooltipContent}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                        <input
+                          id="landing-repo-url"
+                          type="text"
+                          value={sandboxRepoUrl}
+                          onChange={(e) => setSandboxRepoUrl(e.target.value)}
+                          placeholder="https://github.com/Tellimer/repository"
+                          className="h-9 w-full rounded-lg border border-input bg-background/80 px-3 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/20"
+                          data-testid="new-chat-landing-repo-input"
+                        />
+                      </div>
                       <div className="space-y-1.5">
                         <label
-                          className="text-xs font-medium text-foreground"
-                          htmlFor="landing-repo-preset"
+                          htmlFor="landing-repo-branch"
+                          className="flex items-center gap-1.5 text-xs font-medium text-foreground"
                         >
-                          Tellimer project
+                          Branch
+                          <span className="font-normal text-muted-foreground">Optional</span>
                         </label>
-                        <Select
-                          value={selectedRepositoryPreset?.id ?? "custom"}
-                          onValueChange={(value) => {
-                            if (value === "custom") {
-                              setSandboxRepoUrl("");
-                              setSandboxRepoBranch("");
-                              return;
-                            }
-                            const repository = repositoryPresetById(value);
-                            if (!repository) return;
-                            setSandboxRepoUrl(repository.url);
-                            setSandboxRepoBranch(repository.branch);
-                            writeLastTellimerRepository(repository.id);
-                          }}
-                        >
-                          <SelectTrigger
-                            id="landing-repo-preset"
-                            className="w-full"
-                            data-testid="new-chat-landing-repo-preset"
-                          >
-                            <SelectValue placeholder="Select a Tellimer project" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {TELLIMER_REPOSITORIES.map((repository) => (
-                              <SelectItem key={repository.id} value={repository.id}>
-                                <span className="flex min-w-0 flex-col py-0.5">
-                                  <span className="font-medium">{repository.label}</span>
-                                  <span className="truncate text-[10px] text-muted-foreground">
-                                    {repository.description}
-                                  </span>
-                                </span>
-                              </SelectItem>
-                            ))}
-                            <SelectSeparator />
-                            <SelectItem value="custom">Custom repository</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <input
+                          id="landing-repo-branch"
+                          type="text"
+                          value={sandboxRepoBranch}
+                          onChange={(e) => setSandboxRepoBranch(e.target.value)}
+                          placeholder="Use repository default"
+                          aria-label="Repository branch"
+                          className="h-9 w-full rounded-lg border border-input bg-background/80 px-3 font-mono text-xs text-foreground outline-none transition-colors placeholder:font-sans placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/20"
+                          data-testid="new-chat-landing-repo-branch-input"
+                        />
                       </div>
-                      <div className="my-1 h-px bg-border" />
-                      <div className="flex items-center gap-1.5">
-                        <label
-                          htmlFor="landing-repo-url"
-                          className="text-xs font-medium text-foreground"
-                        >
-                          Repository URL
-                        </label>
-                        {databricksGitCredentialsTooltipContent && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground"
-                                aria-label="How to set up Databricks git credentials"
-                              >
-                                <CircleHelpIcon className="size-3.5" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-64">
-                              {databricksGitCredentialsTooltipContent}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
-                      </div>
-                      <input
-                        id="landing-repo-url"
-                        type="text"
-                        value={sandboxRepoUrl}
-                        onChange={(e) => setSandboxRepoUrl(e.target.value)}
-                        placeholder="https://github.com/Tellimer/repository"
-                        className="rounded-md border border-input bg-background px-3 py-2 text-xs outline-none transition-colors focus-visible:border-ring"
-                        data-testid="new-chat-landing-repo-input"
-                      />
-                      <input
-                        type="text"
-                        value={sandboxRepoBranch}
-                        onChange={(e) => setSandboxRepoBranch(e.target.value)}
-                        placeholder="Branch (defaults to the repo's default)"
-                        aria-label="Repository branch"
-                        className="rounded-md border border-input bg-background px-3 py-2 text-xs outline-none transition-colors focus-visible:border-ring"
-                        data-testid="new-chat-landing-repo-branch-input"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        The selected project supplies the real monorepo and source branch. You can
-                        still enter a custom repository when needed.
+                      <p className="text-[11px] leading-4 text-muted-foreground">
+                        Leave the branch empty to use the repository&apos;s default branch.
                       </p>
                     </div>
                   </PopoverContent>

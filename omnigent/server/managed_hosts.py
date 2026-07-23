@@ -1931,7 +1931,11 @@ async def launch_managed_host(
         startup, or registration fails.
     """
     launcher = config.launcher_factory()
-    launcher.set_launch_context(owner=owner, session_id=session_id)
+    launcher.set_launch_context(
+        owner=owner,
+        session_id=session_id,
+        repository=repo.url if repo is not None else None,
+    )
     host_id = uuid.uuid4().hex
     # Visible label in the host picker; (owner, name) is the hosts
     # table PK, so embed the host_id's leading hex for uniqueness
@@ -2012,7 +2016,11 @@ async def relaunch_managed_host(
                 "was launched with is no longer configured on this server"
             ),
         )
-    launcher.set_launch_context(owner=host.user_id, session_id=session_id)
+    launcher.set_launch_context(
+        owner=host.user_id,
+        session_id=session_id,
+        repository=repo.url if repo is not None else None,
+    )
     # The old generation is normally already dead (that is why we are
     # here), but terminate defensively so a transient tunnel outage
     # can never leave two live sandboxes claiming one host identity.

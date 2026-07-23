@@ -44,7 +44,11 @@ def test_provision_sends_launch_context_and_returns_stable_runtime_id(
         url="https://platform.example.com",
         env=["PLATFORM_GIT_BROKER_URL"],
     )
-    launcher.set_launch_context(owner="alice@example.com", session_id="conv_alice")
+    launcher.set_launch_context(
+        owner="alice@example.com",
+        session_id="conv_alice",
+        repository="https://github.com/Tellimer/articles.git",
+    )
 
     assert launcher.provision("managed-abcd1234") == "runtime_abc"
     payload = json.loads(requests[0].data or b"{}")
@@ -52,6 +56,7 @@ def test_provision_sends_launch_context_and_returns_stable_runtime_id(
         "name": "managed-abcd1234",
         "owner": "alice@example.com",
         "sessionId": "conv_alice",
+        "repository": "https://github.com/Tellimer/articles.git",
         "env": {"PLATFORM_GIT_BROKER_URL": "https://platform.example.com/git"},
     }
     assert requests[0].headers["Authorization"] == "Bearer runtime-secret"

@@ -42,10 +42,14 @@ class RemoteSandboxLauncher(SandboxLauncher):
         self._env_names = tuple(env or ())
         self._owner: str | None = None
         self._session_id: str | None = None
+        self._repository: str | None = None
 
-    def set_launch_context(self, *, owner: str, session_id: str | None) -> None:
+    def set_launch_context(
+        self, *, owner: str, session_id: str | None, repository: str | None = None
+    ) -> None:
         self._owner = owner
         self._session_id = session_id
+        self._repository = repository
 
     def prepare(self) -> None:
         if not self._url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
@@ -69,15 +73,18 @@ class RemoteSandboxLauncher(SandboxLauncher):
                     f"sandbox.remote.env names '{env_name}' but it is not set"
                 )
             env[env_name] = value
+        payload: dict[str, object] = {
+            "name": name,
+            "owner": self._owner,
+            "sessionId": self._session_id,
+            "env": env,
+        }
+        if self._repository is not None:
+            payload["repository"] = self._repository
         body = self._request(
             "POST",
             "/api/v1/sandbox-runtimes",
-            {
-                "name": name,
-                "owner": self._owner,
-                "sessionId": self._session_id,
-                "env": env,
-            },
+            payload,
             timeout=15 * 60,
             retryable=True,
         )
