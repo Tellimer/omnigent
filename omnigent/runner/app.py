@@ -500,6 +500,80 @@ async def _refresh_claude_permission_hook_auth(
             _logger.warning("Could not refresh Claude permission-hook auth")
 
 
+async def _refresh_codex_policy_hook_auth_for_turn(
+    *,
+    bridge_dir: Path,
+    auth_token_factory: Callable[[], str | None] | None,
+) -> bool:
+    """Refresh the Codex policy hook's bearer before one native turn.
+
+    Codex executes ``UserPromptSubmit`` in a short child process that cannot
+    inherit the runner's in-memory auth client.  It therefore reads a bearer
+    snapshot from ``policy_hook.json``.  Managed runners can outlive that
+    short-lived token (and an Omnigent server restart can invalidate it), while
+    the child process deliberately cannot see the runner binding secret needed
+    to mint a replacement.  Rewrite the owner-only config atomically from the
+    runner's refresh-capable factory immediately before every turn so the
+    request gate never fails closed on stale authentication.
+
+    A refresh failure retains the last snapshot.  This matters during a brief
+    mint outage: replacing a still-valid token with an empty header would turn
+    a transient control-plane problem into a guaranteed prompt rejection.
+
+    :param bridge_dir: Session-scoped Codex bridge directory.
+    :param auth_token_factory: Runner-owned refresh-capable bearer factory.
+        ``None`` is the normal local unauthenticated-server case.
+    :returns: ``True`` when a fresh snapshot was written, otherwise ``False``.
+    """
+    if auth_token_factory is None:
+        return False
+
+    from omnigent.cli_auth import databricks_request_headers
+    from omnigent.codex_native_bridge import (
+        read_policy_hook_config,
+        write_policy_hook_config,
+    )
+
+    config = read_policy_hook_config(bridge_dir)
+    if config is None:
+        return False
+    server_url = config.get("ap_server_url")
+    if not isinstance(server_url, str) or not server_url:
+        return False
+
+    try:
+        token = await asyncio.to_thread(auth_token_factory)
+    except Exception:  # noqa: BLE001 — retain the last still-valid snapshot
+        _logger.warning(
+            "Could not refresh Codex policy-hook auth for bridge %s",
+            bridge_dir,
+            exc_info=True,
+        )
+        return False
+    if not token:
+        _logger.warning(
+            "Codex policy-hook auth factory returned no token for bridge %s; "
+            "retaining the prior snapshot",
+            bridge_dir,
+        )
+        return False
+
+    existing_headers = config.get("ap_auth_headers")
+    headers = (
+        {str(key): str(value) for key, value in existing_headers.items()}
+        if isinstance(existing_headers, dict)
+        else {}
+    )
+    headers.update(databricks_request_headers(server_url, bearer_token=token))
+    await asyncio.to_thread(
+        write_policy_hook_config,
+        bridge_dir,
+        ap_server_url=server_url,
+        ap_auth_headers=headers,
+    )
+    return True
+
+
 # Background tasks that re-pop a still-pending cost-budget approval on a
 # terminal client that attaches after the ASK fired. Kept referenced so
 # they aren't garbage-collected before they run.
@@ -14648,6 +14722,12 @@ def create_runner_app(
             codex_bid = codex_labels.get(CODEX_NATIVE_BRIDGE_ID_LABEL_KEY)
             codex_bdir = codex_bridge_dir_for_id(codex_bid or conv)
             write_mcp_bridge_config(codex_bdir)
+            # The hook child cannot mint from the managed runner binding secret.
+            # Refresh its owner-only bearer snapshot before ``UserPromptSubmit``.
+            await _refresh_codex_policy_hook_auth_for_turn(
+                bridge_dir=codex_bdir,
+                auth_token_factory=auth_token_factory,
+            )
             # Fallback for sessions not started via _auto_create_codex_terminal
             # (which already started the relay). await_notify=False: codex's MCP
             # bridge is lazy, so awaiting would stall the turn (see the

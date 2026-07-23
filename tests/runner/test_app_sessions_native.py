@@ -70,6 +70,7 @@ from omnigent.runner.app import (
     _publish_native_terminal_start_error,
     _publish_terminal_pending,
     _refresh_claude_permission_hook_auth,
+    _refresh_codex_policy_hook_auth_for_turn,
     _resolved_workdir_for_spec,
     _session_labels_for_runner_spawn,
     _terminal_lookup_miss_log_state,
@@ -14467,6 +14468,129 @@ async def test_claude_permission_hook_snapshot_refreshes_without_binding_token(
 
     config = read_permission_hook_config(bridge_dir)
     assert config["ap_auth_headers"]["Authorization"] == "Bearer fresh-delegated-token"
+
+
+@pytest.mark.asyncio
+async def test_codex_policy_hook_snapshot_refreshes_before_turn(tmp_path: Path) -> None:
+    """The runner replaces a stale Codex hook token and keeps routing headers."""
+    bridge_dir = tmp_path / "codex-bridge"
+    codex_native_bridge.write_policy_hook_config(
+        bridge_dir,
+        ap_server_url="https://omnigent.example.com",
+        ap_auth_headers={
+            "Authorization": "Bearer stale-token",
+            "X-Databricks-Org-Id": "workspace-123",
+        },
+    )
+    token_calls: list[int] = []
+
+    def _fresh_token() -> str:
+        token_calls.append(1)
+        return "fresh-managed-token"
+
+    refreshed = await _refresh_codex_policy_hook_auth_for_turn(
+        bridge_dir=bridge_dir,
+        auth_token_factory=_fresh_token,
+    )
+
+    assert refreshed is True
+    assert token_calls == [1]
+    config = codex_native_bridge.read_policy_hook_config(bridge_dir)
+    assert config is not None
+    assert config["ap_auth_headers"] == {
+        "Authorization": "Bearer fresh-managed-token",
+        "X-Databricks-Org-Id": "workspace-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_codex_policy_hook_refresh_retains_snapshot_when_mint_fails(
+    tmp_path: Path,
+) -> None:
+    """A transient empty mint must not replace a potentially valid token."""
+    bridge_dir = tmp_path / "codex-bridge"
+    original_headers = {
+        "Authorization": "Bearer previous-token",
+        "X-Databricks-Org-Id": "workspace-123",
+    }
+    codex_native_bridge.write_policy_hook_config(
+        bridge_dir,
+        ap_server_url="https://omnigent.example.com",
+        ap_auth_headers=original_headers,
+    )
+
+    refreshed = await _refresh_codex_policy_hook_auth_for_turn(
+        bridge_dir=bridge_dir,
+        auth_token_factory=lambda: None,
+    )
+
+    assert refreshed is False
+    config = codex_native_bridge.read_policy_hook_config(bridge_dir)
+    assert config is not None
+    assert config["ap_auth_headers"] == original_headers
+
+
+@pytest.mark.asyncio
+async def test_codex_message_refreshes_policy_auth_before_harness_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real message path refreshes policy auth before starting Codex."""
+    conv_id = "0d857f445c494786bc96707ce01a8e93"
+    monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
+    bridge_dir = codex_native_bridge.bridge_dir_for_bridge_id(conv_id)
+    codex_native_bridge.write_policy_hook_config(
+        bridge_dir,
+        ap_server_url="https://omnigent.example.com",
+        ap_auth_headers={"Authorization": "Bearer stale-token"},
+    )
+    harness_client = _ScriptedHarnessClient(
+        [_sse({"type": "response.completed", "response": {"id": "resp_1"}})]
+    )
+    spec = AgentSpec(
+        spec_version=1,
+        name="codex",
+        executor=ExecutorSpec(
+            type="omnigent",
+            config={"harness": "codex-native", "model": "gpt-5-default"},
+        ),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        del agent_id, session_id
+        return spec
+
+    app = create_runner_app(
+        process_manager=_FakeProcessManager(harness_client),  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+        auth_token_factory=lambda: "fresh-managed-token",
+    )
+
+    async with _runner_client(app) as client:
+        response = await client.post(
+            f"/v1/sessions/{conv_id}/events",
+            json={
+                "type": "message",
+                "role": "user",
+                "agent_id": "agent_codex",
+                "model": "codex",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        )
+        assert response.status_code == 202, response.text
+        for _ in range(20):
+            config = codex_native_bridge.read_policy_hook_config(bridge_dir)
+            if config and config.get("ap_auth_headers") == {
+                "Authorization": "Bearer fresh-managed-token"
+            }:
+                break
+            await asyncio.sleep(0.05)
+
+    config = codex_native_bridge.read_policy_hook_config(bridge_dir)
+    assert config is not None
+    assert config["ap_auth_headers"] == {"Authorization": "Bearer fresh-managed-token"}
+    assert harness_client.posted_bodies, "Codex harness must receive the turn after auth refresh"
 
 
 @pytest.mark.asyncio
