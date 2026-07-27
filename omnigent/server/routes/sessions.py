@@ -18787,7 +18787,11 @@ def create_sessions_router(
         conv = await _validate_session(session_id, request, LEVEL_EDIT)
         body = await request.json()
         is_native_bootstrap = (
-            bool(body.get("ensure_native_terminal") or body.get("bridge_inject_dir"))
+            bool(
+                body.get("ensure_native_terminal")
+                or body.get("bridge_inject_dir")
+                or body.get("restart_native_terminal")
+            )
             and native_coding_agent_for_terminal_name(body.get("terminal")) is not None
             and body.get("session_key") == "main"
         )

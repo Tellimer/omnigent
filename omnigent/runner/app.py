@@ -16739,6 +16739,23 @@ def create_runner_app(
                 existing = await resource_registry.get_terminal_resource(
                     session_id, codex_terminal_id
                 )
+                if body.get("restart_native_terminal") and existing is not None:
+                    _logger.info(
+                        "Restarting Codex terminal on explicit recovery request: session=%s",
+                        session_id,
+                    )
+                    closed = await resource_registry.close_terminal(session_id, codex_terminal_id)
+                    if not closed:
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "error": {
+                                    "code": "terminal_conflict",
+                                    "message": "Existing Codex terminal could not be restarted.",
+                                }
+                            },
+                        )
+                    existing = None
                 if existing is not None:
                     if _is_runner_owned_codex_terminal(resource_registry, existing):
                         return _codex_ensure_response_with_policy_notice(session_id, existing)

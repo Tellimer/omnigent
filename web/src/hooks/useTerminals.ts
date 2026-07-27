@@ -338,6 +338,48 @@ export async function createTerminal(
 }
 
 /**
+ * Restart the session's native coding-agent terminal.
+ *
+ * This is intentionally narrower than :func:`createTerminal`: callers may
+ * only address the well-known ``main`` native pane, and the runner receives
+ * an explicit restart marker so a live-but-unusable bridge is replaced
+ * instead of being returned by the normal idempotent ensure path.
+ */
+export async function restartNativeTerminal(
+  conversationId: string,
+  terminal: string,
+): Promise<TerminalInfo> {
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(conversationId)}/resources/terminals`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        terminal,
+        session_key: "main",
+        ensure_native_terminal: true,
+        restart_native_terminal: true,
+      }),
+    },
+  );
+  if (!res.ok) {
+    let message = `native terminal restart failed: ${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: { message?: string } };
+      if (body.error?.message) message = body.error.message;
+    } catch {
+      // Non-JSON error body — keep the status-line message.
+    }
+    throw new Error(message);
+  }
+  const info = terminalInfoFromResource((await res.json()) as Record<string, unknown>);
+  if (info === null) {
+    throw new Error("native terminal restart returned an unrecognized resource shape");
+  }
+  return info;
+}
+
+/**
  * Mutation hook around :func:`createTerminal`.
  *
  * On success the created terminal is merged into the terminals query

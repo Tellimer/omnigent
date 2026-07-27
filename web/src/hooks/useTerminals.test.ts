@@ -16,6 +16,7 @@ import {
   inventoryTerminals,
   isAgentTerminalKey,
   PENDING_RECONCILE_INTERVAL_MS,
+  restartNativeTerminal,
   terminalInfoFromResource,
   terminalsReconcileInterval,
   terminalTabKey,
@@ -232,6 +233,40 @@ describe("createTerminal", () => {
       ),
     );
     await expect(createTerminal("conv_abc", "zsh")).rejects.toThrow(/not declared/);
+  });
+});
+
+describe("restartNativeTerminal", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests replacement of the well-known native main pane", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        id: "terminal_codex_main",
+        object: "session.resource",
+        type: "terminal",
+        session_id: "conv_abc",
+        name: "codex:main",
+        metadata: { terminal_name: "codex", session_key: "main", running: true },
+      }),
+    );
+
+    await restartNativeTerminal("conv_abc", "codex");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/v1/sessions/conv_abc/resources/terminals");
+    expect(JSON.parse(init.body as string)).toEqual({
+      terminal: "codex",
+      session_key: "main",
+      ensure_native_terminal: true,
+      restart_native_terminal: true,
+    });
   });
 });
 

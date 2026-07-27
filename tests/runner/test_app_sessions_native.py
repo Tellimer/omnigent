@@ -17215,6 +17215,21 @@ class _EnsureCodexTerminalCase:
             expect_name="existing",
         ),
         _EnsureCodexTerminalCase(
+            case_id="restart_existing_replaces_live",
+            body={
+                "terminal": "codex",
+                "session_key": "main",
+                "ensure_native_terminal": True,
+                "restart_native_terminal": True,
+            },
+            existing=True,
+            existing_native=True,
+            expect_auto_create=True,
+            expect_launch=False,
+            expect_close=True,
+            expect_name="auto-created",
+        ),
+        _EnsureCodexTerminalCase(
             case_id="ensure_existing_bash_terminal_replaces",
             body={"terminal": "codex", "session_key": "main", "ensure_native_terminal": True},
             existing=True,

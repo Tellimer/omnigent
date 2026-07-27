@@ -88,6 +88,7 @@ import { usePromptHistory } from "@/hooks/usePromptHistory";
 import { useAutoGrowTextarea } from "@/hooks/useAutoGrowTextarea";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
 import { useIOSNativeKeyboardVisible } from "@/hooks/useIOSNativeKeyboardInset";
+import { restartNativeTerminal } from "@/hooks/useTerminals";
 import type { MessageContentBlock } from "@/lib/blocks";
 import {
   derivePermissionLevel,
@@ -5471,6 +5472,9 @@ function AgentPicker({
   const selectedModel = useChatStore((s) => s.selectedModel);
   const sessionModelOverride = useChatStore((s) => s.sessionModelOverride);
   const llmModel = useChatStore((s) => s.llmModel);
+  const conversationId = useChatStore((s) => s.conversationId);
+  const [modelRetrying, setModelRetrying] = useState(false);
+  const [modelRetryFailed, setModelRetryFailed] = useState(false);
 
   // Codex, cursor, kiro, pi, opencode, and SDK agents populate the picker from the
   // server-provided ``codexModelOptions`` channel (the snapshot's
@@ -5704,17 +5708,40 @@ function AgentPicker({
             <PickerSectionHeader>Models</PickerSectionHeader>
             <DropdownMenuItem
               data-testid="model-picker-retry"
-              onSelect={() =>
-                void useChatStore
-                  .getState()
-                  .refreshSessionState()
-                  .catch(() => {})
-              }
+              disabled={modelRetrying}
+              onSelect={(event) => {
+                event.preventDefault();
+                if (modelRetrying) return;
+                setModelRetryFailed(false);
+                setModelRetrying(true);
+                void (async () => {
+                  try {
+                    if (conversationId && modelPickerKind !== "sdk") {
+                      await restartNativeTerminal(conversationId, modelPickerKind);
+                    }
+                    await useChatStore.getState().refreshSessionState();
+                  } catch {
+                    setModelRetryFailed(true);
+                  } finally {
+                    setModelRetrying(false);
+                  }
+                })();
+              }}
               className="items-center gap-2 rounded-sm px-2 py-1.5 text-xs"
             >
-              <Loader2Icon className="size-3.5 shrink-0" />
-              <span className="flex-1">Models are still loading</span>
-              <span className="text-muted-foreground">Retry</span>
+              <Loader2Icon className={cn("size-3.5 shrink-0", modelRetrying && "animate-spin")} />
+              <span className="flex-1">
+                {modelRetrying
+                  ? "Restarting agent"
+                  : modelRetryFailed
+                    ? "Agent restart failed"
+                    : "Models are still loading"}
+              </span>
+              {!modelRetrying && (
+                <span className="text-muted-foreground">
+                  {modelRetryFailed ? "Try again" : "Retry"}
+                </span>
+              )}
             </DropdownMenuItem>
           </>
         )}
