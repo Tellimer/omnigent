@@ -16993,6 +16993,15 @@ def create_sessions_router(
                 code=ErrorCode.NOT_FOUND,
             ) from exc
 
+        # Model catalogs are provider/harness-specific. A Codex → Claude
+        # switch (or the reverse) keeps the same session id, so any catalog
+        # cached under that id belongs to the agent we just left. Drop both
+        # runner-fetched and native-extension-pushed values before publishing
+        # ``session.agent_changed``; the client's ensuing snapshot then starts
+        # target discovery instead of rendering stale source-provider models.
+        _invalidate_runner_backed_snapshot_state(session_id, cancel_inflight=True)
+        _pushed_model_options_cache.pop(session_id, None)
+
         # Tell every connected client the binding changed so they re-derive
         # session state (presentation labels, bound agent) from a fresh
         # snapshot. Without this, a client that bound before the switch keeps

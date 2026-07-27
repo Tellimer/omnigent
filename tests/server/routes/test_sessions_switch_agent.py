@@ -595,6 +595,47 @@ async def test_switch_publishes_agent_changed_event(
 
 
 @pytest.mark.asyncio
+async def test_switch_invalidates_source_agent_model_catalogs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful switch drops every model catalog keyed by the session.
+
+    The session id survives an in-place switch, but its provider does not.
+    Serving a cached Codex catalog after switching to Claude leaves the model
+    picker on ``gpt-*`` even though Claude turns already execute successfully.
+    """
+    session_id = "e9f8f58523cec9a57d3bdf93be543e8c"
+    conv_store = _ConversationStore(conversations={session_id: _conv()})
+    agent_store = _AgentStore(
+        {
+            "a98bb825ebd41391c19637c58fe3c0b7": _CURRENT,
+            "52adb39f0c5ea92b5563da5327dac08f": _BUILTIN_CLAUDE,
+        }
+    )
+    _patch_family_helpers(monkeypatch, same_family=False, native=False, labels={})
+    monkeypatch.setitem(
+        sessions_mod._model_options_cache,
+        session_id,
+        [{"id": "gpt-source-model"}],
+    )
+    monkeypatch.setitem(
+        sessions_mod._pushed_model_options_cache,
+        session_id,
+        [{"id": "pi-source-model"}],
+    )
+    client = TestClient(_build_app(conv_store, agent_store))
+
+    resp = client.post(
+        f"/v1/sessions/{session_id}/switch-agent",
+        json={"agent_id": "52adb39f0c5ea92b5563da5327dac08f"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert session_id not in sessions_mod._model_options_cache
+    assert session_id not in sessions_mod._pushed_model_options_cache
+
+
+@pytest.mark.asyncio
 async def test_switch_rejected_publishes_no_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
