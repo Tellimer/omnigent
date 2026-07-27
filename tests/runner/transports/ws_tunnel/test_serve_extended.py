@@ -388,20 +388,29 @@ async def test_serve_tunnel_recycle_close_code_resets_backoff(
 async def test_serve_tunnel_on_reconnect_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """on_reconnect is called after successful reconnect (not initial connect)."""
-    reconnects: list[str] = []
+    """Recovery waits for a successful replacement tunnel handshake."""
+    events: list[str] = []
     call_count = 0
 
     async def _serve_once(app: Any, **kwargs: Any) -> None:
         nonlocal call_count
         call_count += 1
+        if call_count == 1:
+            events.append("initial-connected")
+            await app.on_tunnel_connected()
+            return
+        if call_count == 2:
+            events.append("reconnect-failed")
+            raise ConnectionError("ingress unavailable")
+        events.append("replacement-connected")
+        await app.on_tunnel_connected()
+        raise asyncio.CancelledError
 
     async def _sleep(delay: float) -> None:
-        if call_count >= 2:
-            raise asyncio.CancelledError
+        del delay
 
     async def _on_reconnect() -> None:
-        reconnects.append("reconnected")
+        events.append("recovery")
 
     monkeypatch.setattr(serve_module, "_serve_tunnel_once", _serve_once)
     monkeypatch.setattr(serve_module.asyncio, "sleep", _sleep)
@@ -415,8 +424,12 @@ async def test_serve_tunnel_on_reconnect_callback(
             on_reconnect=_on_reconnect,
         )
 
-    # on_reconnect is called before the second _serve_once, not the first.
-    assert reconnects == ["reconnected"]
+    assert events == [
+        "initial-connected",
+        "reconnect-failed",
+        "replacement-connected",
+        "recovery",
+    ]
 
 
 # ── websocket_http_status edge cases ────────────────────

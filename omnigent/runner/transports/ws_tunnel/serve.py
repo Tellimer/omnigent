@@ -63,6 +63,28 @@ _ASGIApp = Callable[
     Awaitable[None],
 ]
 
+
+class _ConnectionAwareASGIApp:
+    """ASGI proxy carrying a post-handshake callback for the tunnel."""
+
+    def __init__(
+        self,
+        app: _ASGIApp,
+        on_tunnel_connected: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._app = app
+        self.on_tunnel_connected = on_tunnel_connected
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        """Delegate an incoming tunneled request to the runner app."""
+        await self._app(scope, receive, send)
+
+
 # Reconnect backoff: 0.5 s initial, 10 s cap, ±50% jitter. The
 # jitter spreads simultaneous reconnects from many runners across
 # each backoff window so a server restart doesn't see a synchronised
@@ -283,21 +305,28 @@ async def serve_tunnel(
     """
     delay_s = _INITIAL_RECONNECT_DELAY_S
     tunnel_url = _tunnel_url(server_url, runner_id)
-    _connected_before = False
-    while True:
-        auth_token = await _refresh_auth_token(auth_token, auth_token_factory)
-        if _connected_before and on_reconnect is not None:
+    connected_before = False
+
+    async def _tunnel_connected() -> None:
+        """Run catch-up only after a replacement tunnel is usable."""
+        nonlocal connected_before
+        is_reconnect = connected_before
+        connected_before = True
+        if is_reconnect and on_reconnect is not None:
             try:
                 await on_reconnect()
             except Exception:
                 _logger.exception("on_reconnect callback failed")
+
+    tunnel_app = _ConnectionAwareASGIApp(app, _tunnel_connected)
+    while True:
+        auth_token = await _refresh_auth_token(auth_token, auth_token_factory)
         retry_reason = "connection closed cleanly"
         recycle = False
         try:
-            _connected_before = True
             activity_kwargs = {"on_activity": on_activity} if on_activity is not None else {}
             await _serve_tunnel_once(
-                app,
+                tunnel_app,
                 tunnel_url=tunnel_url,
                 server_url=server_url,
                 runner_id=runner_id,
@@ -576,6 +605,16 @@ async def _serve_tunnel_once(
     ) as ws:
         await _send_hello(ws.send, runner_version)
         _logger.info("runner %s connected to %s", runner_id, tunnel_url)
+        on_connected = getattr(app, "on_tunnel_connected", None)
+        connected_task: asyncio.Task[None] | None = None
+        if callable(on_connected):
+            # Recovery may trigger server requests back through this tunnel.
+            # Keep receiving frames while it runs instead of deadlocking the
+            # callback behind the receive loop it needs.
+            connected_task = asyncio.create_task(
+                on_connected(),
+                name=f"ws-tunnel-reconnected:{runner_id}",
+            )
         try:
             async for raw in ws:
                 await _handle_tunnel_frame(
@@ -587,6 +626,9 @@ async def _serve_tunnel_once(
                     on_activity=on_activity,
                 )
         finally:
+            if connected_task is not None:
+                connected_task.cancel()
+                await asyncio.gather(connected_task, return_exceptions=True)
             await _cancel_dispatch_tasks(dispatch_tasks)
             await _cancel_ws_channels(ws_channels)
 
