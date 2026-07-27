@@ -9896,9 +9896,19 @@ def create_runner_app(
             )
             async with _codex_ensure_lock:
                 _tr = resource_registry.terminal_registry
-                _has_codex_terminal = (
-                    _tr is not None and _tr.get(session_id, "codex", "main") is not None
-                )
+                _codex_instance = _tr.get(session_id, "codex", "main") if _tr is not None else None
+                if (
+                    _tr is not None
+                    and _codex_instance is not None
+                    and (not _codex_instance.running or not await _codex_instance.is_alive())
+                ):
+                    _logger.warning(
+                        "Removing stale Codex terminal during session bootstrap: %s",
+                        session_id,
+                    )
+                    await _tr.close(session_id, "codex", "main")
+                    _codex_instance = None
+                _has_codex_terminal = _codex_instance is not None
                 # Codex-native sessions use runner-owned app-server/TUI/forwarder
                 # setup. The CLI now attaches to the resulting tmux terminal only.
                 _needs_terminal = await _codex_session_needs_runner_terminal(
@@ -16712,6 +16722,20 @@ def create_runner_app(
             codex_terminal_id = terminal_resource_id("codex", "main")
             ensure_lock = _codex_terminal_ensure_locks.setdefault(session_id, asyncio.Lock())
             async with ensure_lock:
+                terminal_registry = resource_registry.terminal_registry
+                registered = (
+                    terminal_registry.get(session_id, "codex", "main")
+                    if terminal_registry is not None
+                    else None
+                )
+                if registered is not None and (
+                    not registered.running or not await registered.is_alive()
+                ):
+                    _logger.warning(
+                        "Replacing stale Codex terminal for session %s",
+                        session_id,
+                    )
+                    await terminal_registry.close(session_id, "codex", "main")
                 existing = await resource_registry.get_terminal_resource(
                     session_id, codex_terminal_id
                 )
@@ -17304,8 +17328,16 @@ def create_runner_app(
         terminal_registry = resource_registry.terminal_registry if resource_registry else None
         if terminal_registry is None:
             return
-        if terminal_registry.get(conv_id, terminal_name, "main") is not None:
-            return  # a pane is still registered — nothing to heal
+        registered = terminal_registry.get(conv_id, terminal_name, "main")
+        if registered is not None:
+            if registered.running and await registered.is_alive():
+                return
+            _logger.warning(
+                "native pane is registered but dead for conv=%s harness=%s; replacing",
+                conv_id,
+                harness_name,
+            )
+            await terminal_registry.close(conv_id, terminal_name, "main")
         _logger.info(
             "native pane missing for conv=%s harness=%s; re-ensuring before turn (#1349)",
             conv_id,

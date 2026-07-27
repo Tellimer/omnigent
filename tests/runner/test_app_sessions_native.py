@@ -17428,6 +17428,106 @@ async def test_create_session_terminal_ensure_routes_codex_native(
 
 
 @pytest.mark.asyncio
+async def test_create_session_terminal_replaces_registered_dead_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale registry entry cannot turn Codex ensure into a no-op."""
+    sid = "d0c83e76d4934ed4bc03d4fce85ad589"
+    closed = False
+    auto_created = False
+
+    class _DeadTerminal:
+        running = True
+
+        async def is_alive(self) -> bool:
+            return False
+
+    dead = _DeadTerminal()
+
+    def _get(
+        self: object,
+        conversation_id: str,
+        terminal_name: str,
+        session_key: str,
+    ) -> object | None:
+        del self
+        if not closed and (conversation_id, terminal_name, session_key) == (
+            sid,
+            "codex",
+            "main",
+        ):
+            return dead
+        return None
+
+    async def _close(
+        self: object,
+        conversation_id: str,
+        terminal_name: str,
+        session_key: str,
+    ) -> None:
+        nonlocal closed
+        del self
+        assert (conversation_id, terminal_name, session_key) == (sid, "codex", "main")
+        closed = True
+
+    async def _get_resource(
+        self: object,
+        session_id: str,
+        terminal_id: str,
+    ) -> SessionResourceView | None:
+        del self, session_id, terminal_id
+        return (
+            None
+            if closed
+            else SessionResourceView(
+                id="terminal_codex_main",
+                type="terminal",
+                session_id=sid,
+                name="stale",
+            )
+        )
+
+    async def _auto_create(
+        session_id: str,
+        resource_registry: object,
+        publish_event: object,
+        **kwargs: object,
+    ) -> SessionResourceView:
+        nonlocal auto_created
+        del resource_registry, publish_event, kwargs
+        assert session_id == sid
+        auto_created = True
+        return SessionResourceView(
+            id="terminal_codex_main",
+            type="terminal",
+            session_id=sid,
+            name="recreated",
+        )
+
+    monkeypatch.setattr(TerminalRegistry, "get", _get)
+    monkeypatch.setattr(TerminalRegistry, "close", _close)
+    monkeypatch.setattr(SessionResourceRegistry, "get_terminal_resource", _get_resource)
+    monkeypatch.setattr("omnigent.runner.app._auto_create_codex_terminal", _auto_create)
+
+    app = create_runner_app(
+        process_manager=_FakeProcessManager(_ScriptedHarnessClient([])),  # type: ignore[arg-type]
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+        terminal_registry=TerminalRegistry(),
+    )
+
+    async with _runner_client(app) as client:
+        response = await client.post(
+            f"/v1/sessions/{sid}/resources/terminals",
+            json={"terminal": "codex", "session_key": "main", "ensure_native_terminal": True},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "recreated"
+    assert closed is True
+    assert auto_created is True
+
+
+@pytest.mark.asyncio
 async def test_late_status_for_deleted_sub_agent_child_is_not_a_spurious_503() -> None:
     """
     A terminal status arriving after a sub-agent child is deleted is a no-op.
