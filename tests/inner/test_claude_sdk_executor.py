@@ -156,6 +156,39 @@ class TestPromptExtraction(unittest.TestCase):
 
 
 class TestConstructor(unittest.TestCase):
+    def test_subscription_credentials_are_explicitly_forwarded(self):
+        from omnigent.inner.claude_sdk_executor import _claude_subscription_env
+
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": "setup-token",
+                "CLAUDE_CODE_OAUTH_SCOPES": "user:inference",
+                "UNRELATED_SECRET": "must-not-pass",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _claude_subscription_env(),
+                {
+                    "CLAUDE_CODE_OAUTH_TOKEN": "setup-token",
+                    "CLAUDE_CODE_OAUTH_SCOPES": "user:inference",
+                },
+            )
+
+    def test_empty_subscription_credentials_are_not_forwarded(self):
+        from omnigent.inner.claude_sdk_executor import _claude_subscription_env
+
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "CLAUDE_CODE_OAUTH_SCOPES": "",
+            },
+            clear=True,
+        ):
+            self.assertEqual(_claude_subscription_env(), {})
+
     def test_default_values(self):
         from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
         from omnigent.spec.types import RetryPolicy

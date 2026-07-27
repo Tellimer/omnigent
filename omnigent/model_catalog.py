@@ -464,6 +464,12 @@ def _legacy_claude_sdk_provider(spec: Any) -> ResolvedModelProvider:  # type: ig
     prefix = _databricks_prefix_provider(spec)
     if prefix is not None:
         return prefix
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+        return ResolvedModelProvider(
+            kind=SUBSCRIPTION_KIND,
+            cli="claude",
+            detail="Claude Code OAuth setup token",
+        )
     return ResolvedModelProvider(kind=NONE_KIND, detail="no model provider configured")
 
 

@@ -85,6 +85,17 @@ logger = logging.getLogger(__name__)
 # unset. Not Databricks-specific: the same fallback applies to any gateway
 # producer (Databricks AI gateway or a generic key/gateway provider).
 _GATEWAY_AUTH_REFRESH_MS = 900_000
+_CLAUDE_SUBSCRIPTION_ENV_KEYS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+)
+
+
+def _claude_subscription_env() -> dict[str, str]:
+    """Return subscription credentials that must reach the SDK subprocess."""
+
+    return {key: value for key in _CLAUDE_SUBSCRIPTION_ENV_KEYS if (value := os.environ.get(key))}
+
 
 # ---------------------------------------------------------------------------
 # TypeAliases for Omnigent JSON-shaped boundary values. The SDK exchanges
@@ -2121,7 +2132,7 @@ class ClaudeSDKExecutor(Executor):
         # creds. CLAUDECODE removal happens around the subprocess spawn in
         # ``_get_or_create_client`` via ``_unset_env_var`` — setting it to
         # ``""`` here would still leave an empty key in the child env.
-        env = dict(self._extra_env)
+        env = {**self._extra_env, **_claude_subscription_env()}
         api_key_helper = env.pop(_CLAUDE_API_KEY_HELPER_ENV_KEY, None)
         settings_payload = (
             json.dumps({"apiKeyHelper": api_key_helper}, separators=(",", ":"))

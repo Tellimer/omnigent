@@ -414,6 +414,46 @@ def test_resolve_provider_claude_sdk_consumes_top_level_executor_profile(
     assert provider.profile == "top-level-prof"
 
 
+def test_resolve_provider_claude_sdk_uses_setup_token_subscription(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A brokered setup token makes the headless Claude SDK worker usable."""
+    _isolate_config(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "setup-token")
+
+    provider = resolve_model_provider(_worker_spec("claude-sdk"), "claude-sdk")
+
+    assert provider.kind == "subscription"
+    assert provider.cli == "claude"
+    listing = list_models_for_worker(_worker_spec("claude-sdk"), "claude-sdk")
+    assert listing.source == "static"
+    assert [model.id for model in listing.models] == [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ]
+
+
+def test_resolve_provider_explicit_claude_auth_precedes_setup_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Explicit spec auth remains authoritative when a setup token is ambient."""
+    _isolate_config(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "setup-token")
+    spec = _worker_spec(
+        "claude-sdk",
+        auth=ApiKeyAuth(api_key="sk-explicit"),
+    )
+
+    provider = resolve_model_provider(spec, "claude-sdk")
+
+    assert provider.kind == "key"
+    assert provider.family == "anthropic"
+    assert provider.api_key == "sk-explicit"
+
+
 def test_resolve_provider_openai_agents_api_key_auth_keeps_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
